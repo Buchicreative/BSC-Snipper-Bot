@@ -49,9 +49,19 @@ SOL-equivalent USD sizing.
 
 Before flipping to `/mode live`, these MUST be finished:
 
-- [ ] **four.meme factory address + real ABI.** `src/listeners/fourMemeListener.js`
-      has a placeholder event signature. Pull a real four.meme launch tx from
-      BscScan, decode the actual event, and update the ABI + address in `.env`.
+- [ ] **Verify the exact TokenCreate field order.** The contract address
+      (`0x5c952063c7fc8610FFDB798152D69F0B9550762b`, TokenManager2) and event
+      name (`TokenCreate`) are now confirmed from multiple independent
+      sources — Bitquery's BSC indexer docs, four.meme's own GitBook, and
+      community tooling. What's *not* confirmed is the exact parameter
+      order/types, because the contract is unverified on BscScan (no public
+      source). Grab the authoritative ABI from four.meme's own download at
+      https://four-meme.gitbook.io/four.meme/brand/protocol-integration
+      (`TokenManager2.lite.abi`) and diff it against
+      `src/listeners/fourMemeListener.js`, or decode one real transaction to
+      confirm field order. The listener also logs raw undecoded logs from
+      the contract as a diagnostic — if you see those but never see "new
+      token detected," that's the signature mismatch surfacing.
 - [ ] **Honeypot simulation.** `src/filters/safetyChecks.js` flags this as
       not-implemented. Needs an actual buy+sell simulation (e.g. via `eth_call`
       against the router, or a service like honeypot.is's API) before any live
@@ -61,8 +71,6 @@ Before flipping to `/mode live`, these MUST be finished:
 - [ ] **Holder concentration check.** `/setmaxholderpercent` is wired up and
       adjustable, but nothing evaluates it yet — needs a BscScan API call or an
       indexer to pull top holders.
-- [ ] **Sell-side amountOutMin now uses live slippage settings** (fixed — was
-      previously hardcoded to 0).
 
 ### Already implemented and functional
 
