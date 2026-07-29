@@ -4,6 +4,7 @@ const settings = require('../utils/settings');
 const priceFeed = require('../utils/priceFeed');
 const honeypotChecker = require('../utils/honeypotChecker');
 const liquidityLock = require('../utils/liquidityLock');
+const holderConcentration = require('../utils/holderConcentration');
 const logger = require('../utils/logger');
 
 const ERC20_ABI = [
@@ -93,6 +94,7 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
 async function runSafetyChecks(tokenAddress, provider) {
   const reasons = [];
   const report = {};
+  let pairAddressForLockCheck = null;
 
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
 
@@ -108,18 +110,12 @@ async function runSafetyChecks(tokenAddress, provider) {
     report.owner = 'unknown';
   }
 
-  // 2. Holder concentration — is any single wallet over maxHolderPercent?
-  // NOTE: needs a BscScan API call or an indexer to pull top holders —
-  // stub this in before relying on it live. Setting is wired up and
-  // adjustable via /setmaxholderpercent, just not evaluated yet.
-  report.maxHolderPercent = settings.get('maxHolderPercent');
-  reasons.push('holder_concentration_check_not_implemented');
-
-  // 3. Liquidity + market cap checks (USD-denominated, matching /setminliquidity,
+  // 2. Liquidity + market cap checks (USD-denominated, matching /setminliquidity,
   // /setmaxmarketcap, /setminmarketcap). Only meaningful post-graduation —
   // four.meme tokens pre-graduation won't have a PancakeSwap pair yet, so
   // both read as 0 and get rejected by minLiquidityUsd until they graduate.
-  let pairAddressForLockCheck = null;
+  // Resolves the pair address, reused below by the holder concentration and
+  // liquidity lock checks.
   try {
     const { liquidityUsd, marketCapUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
     pairAddressForLockCheck = pairAddress;
@@ -143,6 +139,34 @@ async function runSafetyChecks(tokenAddress, provider) {
   } catch (err) {
     logger.warn('Liquidity/market cap read failed', { tokenAddress, error: err.message });
     reasons.push('liquidity_read_failed');
+  }
+
+  // 3. Holder concentration — is any single wallet over maxHolderPercent?
+  // Real check via Etherscan's unified API (chainid=56 for BSC) — requires
+  // ETHERSCAN_API_KEY to be set. Without a key, or if the call fails (rate
+  // limit, plan tier, token too new to be indexed), this is a soft failure:
+  // logged and visible in the report, doesn't block the buy on its own.
+  try {
+    const totalSupplyRaw = await token.totalSupply();
+    const holderResult = await holderConcentration.getTopHolderPercent(tokenAddress, totalSupplyRaw, {
+      pairAddress: pairAddressForLockCheck,
+    });
+
+    report.maxHolderPercent = settings.get('maxHolderPercent');
+
+    if (holderResult.checked) {
+      report.topHolderPercent = holderResult.topHolderPercent;
+      report.topHolderAddress = holderResult.topHolderAddress;
+      if (holderResult.topHolderPercent > settings.get('maxHolderPercent')) {
+        reasons.push('holder_concentration_above_maximum');
+      }
+    } else {
+      report.holderConcentrationCheckSkipped = holderResult.reason;
+      reasons.push('holder_concentration_check_unavailable');
+    }
+  } catch (err) {
+    logger.warn('Holder concentration check errored', { tokenAddress, error: err.message });
+    reasons.push('holder_concentration_check_unavailable');
   }
 
   // 4. Honeypot + buy/sell tax check — actually simulates a buy+sell via
@@ -218,6 +242,7 @@ async function runSafetyChecks(tokenAddress, provider) {
       'honeypot_detected',
       'buy_tax_above_maximum',
       'sell_tax_above_maximum',
+      'holder_concentration_above_maximum',
     ].includes(r)
   );
 

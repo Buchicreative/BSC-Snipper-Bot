@@ -43,4 +43,10 @@ module.exports = {
   db: {
     path: process.env.DB_PATH || './data/bot.db',
   },
+
+  // Optional — powers the holder concentration check (top-holder %) via
+  // Etherscan's unified V2 API (one key works across all EVM chains,
+  // including BSC via chainid=56). Without this set, that one check is
+  // skipped (soft failure) rather than blocking all trading.
+  etherscanApiKey: process.env.ETHERSCAN_API_KEY || null,
 };

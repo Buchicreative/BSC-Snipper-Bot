@@ -64,10 +64,6 @@ Before flipping to `/mode live`, these MUST be finished:
       confirm field order. The listener also logs raw undecoded logs from
       the contract as a diagnostic — if you see those but never see "new
       token detected," that's the signature mismatch surfacing.
-- [ ] **Holder concentration check.** `/setmaxholderpercent` is wired up and
-      adjustable, but nothing evaluates it yet — needs a BscScan API call or an
-      indexer to pull top holders.
-
 ### Already implemented and functional
 
 - **Full command parity** with the Solana bot's command set (table above),
@@ -87,6 +83,14 @@ Before flipping to `/mode live`, these MUST be finished:
   means "not locked by a locker we know about," not "definitely unlocked" —
   visible in the safety report as `lpLockedPercent`, but doesn't block a buy
   on its own the way the honeypot/liquidity/market-cap checks do.
+- **Holder concentration check** — `src/utils/holderConcentration.js` pulls
+  the top holder list via Etherscan's unified V2 API (BSC is `chainid=56`,
+  same key as every other EVM chain Etherscan covers) and rejects a token if
+  any single wallet — excluding the AMM pair itself, which normally holds a
+  large legitimate share — holds more than `/setmaxholderpercent`. **Requires
+  `ETHERSCAN_API_KEY` in `.env`** (free tier from etherscan.io/apis); without
+  one, this check is skipped as a soft failure rather than blocking all
+  trading.
 - **Auto-buy is live by default in PAPER mode** (safe — no real funds), same
   as the reference bot: it evaluates every candidate against liquidity, market
   cap, max positions, and (in live mode only) gas reserve, then opens a
