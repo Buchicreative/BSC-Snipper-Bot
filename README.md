@@ -64,8 +64,6 @@ Before flipping to `/mode live`, these MUST be finished:
       confirm field order. The listener also logs raw undecoded logs from
       the contract as a diagnostic — if you see those but never see "new
       token detected," that's the signature mismatch surfacing.
-- [ ] **Liquidity lock check.** Check LP token holder against known locker
-      contracts (Unicrypt, PinkLock, Mudra, etc).
 - [ ] **Holder concentration check.** `/setmaxholderpercent` is wired up and
       adjustable, but nothing evaluates it yet — needs a BscScan API call or an
       indexer to pull top holders.
@@ -82,6 +80,13 @@ Before flipping to `/mode live`, these MUST be finished:
   simulated tax percentages. If the API is unreachable, it's logged as a soft
   failure rather than silently blocking all trading — worth knowing if you
   see a run of skipped tokens with no other explanation.
+- **Liquidity lock check** — `src/utils/liquidityLock.js` checks what % of a
+  token's LP tokens sit in known BSC locker contracts (PinkLock V1/V2, UNCX
+  Network/Unicrypt, Team Finance) or a burn address. This is informational,
+  not a hard block: it only recognizes the lockers listed, so a 0% result
+  means "not locked by a locker we know about," not "definitely unlocked" —
+  visible in the safety report as `lpLockedPercent`, but doesn't block a buy
+  on its own the way the honeypot/liquidity/market-cap checks do.
 - **Auto-buy is live by default in PAPER mode** (safe — no real funds), same
   as the reference bot: it evaluates every candidate against liquidity, market
   cap, max positions, and (in live mode only) gas reserve, then opens a

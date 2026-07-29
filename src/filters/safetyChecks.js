@@ -3,6 +3,7 @@ const config = require('../config');
 const settings = require('../utils/settings');
 const priceFeed = require('../utils/priceFeed');
 const honeypotChecker = require('../utils/honeypotChecker');
+const liquidityLock = require('../utils/liquidityLock');
 const logger = require('../utils/logger');
 
 const ERC20_ABI = [
@@ -45,6 +46,7 @@ async function getPairReserves(tokenAddress, provider) {
   const tokenReserve = isToken0Wbnb ? reserve1 : reserve0;
 
   return {
+    pairAddress,
     wbnbReserveBnb: parseFloat(ethers.formatEther(wbnbReserve)),
     tokenReserveRaw: tokenReserve, // still in raw token decimals
   };
@@ -58,7 +60,7 @@ async function getPairReserves(tokenAddress, provider) {
 async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
   const reserves = await getPairReserves(tokenAddress, provider);
   if (!reserves) {
-    return { liquidityUsd: 0, marketCapUsd: 0 };
+    return { liquidityUsd: 0, marketCapUsd: 0, pairAddress: null };
   }
 
   const bnbUsdPrice = await priceFeed.getBnbUsdPrice();
@@ -78,7 +80,7 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
     marketCapUsd = tokenPriceBnb * totalSupplyFormatted * bnbUsdPrice;
   }
 
-  return { liquidityUsd, marketCapUsd };
+  return { liquidityUsd, marketCapUsd, pairAddress: reserves.pairAddress };
 }
 
 /**
@@ -117,8 +119,10 @@ async function runSafetyChecks(tokenAddress, provider) {
   // /setmaxmarketcap, /setminmarketcap). Only meaningful post-graduation —
   // four.meme tokens pre-graduation won't have a PancakeSwap pair yet, so
   // both read as 0 and get rejected by minLiquidityUsd until they graduate.
+  let pairAddressForLockCheck = null;
   try {
-    const { liquidityUsd, marketCapUsd } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
+    const { liquidityUsd, marketCapUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
+    pairAddressForLockCheck = pairAddress;
     const minLiquidity = settings.get('minLiquidityUsd');
     const maxMarketCap = settings.get('maxMarketCapUsd');
     const minMarketCap = settings.get('minMarketCapUsd');
@@ -181,10 +185,25 @@ async function runSafetyChecks(tokenAddress, provider) {
     reasons.push('honeypot_check_unavailable');
   }
 
-  // 5. Liquidity lock check — is LP locked (e.g. via a known locker contract)?
-  // Requires checking LP token holder against known lockers (Unicrypt, PinkLock, etc).
-  report.liquidityLockChecked = false;
-  reasons.push('liquidity_lock_check_not_implemented');
+  // 5. Liquidity lock check — what % of LP tokens sit in a known locker
+  // contract or burn address (PinkLock, UNCX/Unicrypt, Team Finance, or
+  // sent to a dead address)? This only recognizes the lockers it knows
+  // about, so it's informational rather than a hard block: a 0% result
+  // means "not locked by a locker we recognize," not "definitely unlocked."
+  // No pair yet (pre-graduation) means nothing to check.
+  if (pairAddressForLockCheck) {
+    const lockedPercent = await liquidityLock.getLpLockedPercent(pairAddressForLockCheck, provider);
+    report.lpLockedPercent = lockedPercent;
+    if (lockedPercent === null) {
+      reasons.push('liquidity_lock_unknown');
+    } else if (lockedPercent < 50) {
+      // Informational flag only — not in the critical-failure list below.
+      reasons.push('liquidity_mostly_unlocked');
+    }
+  } else {
+    report.lpLockedPercent = null;
+    reasons.push('liquidity_lock_unknown');
+  }
 
   // 6. Contract verification — is source verified on BscScan?
   // Requires a BscScan API call; stub for now.
