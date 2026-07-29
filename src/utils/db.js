@@ -1,4 +1,9 @@
-const Database = require('better-sqlite3');
+// Uses Node's built-in SQLite (node:sqlite, stable since Node 22.5+) instead
+// of better-sqlite3. Same synchronous prepare/run/get/all API, but with zero
+// native compilation — avoids node-gyp build failures on hosts like Railway
+// where the available Node version can outpace better-sqlite3's prebuilt
+// binaries and force a from-source build.
+const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
@@ -9,8 +14,8 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const db = new Database(config.db.path);
-db.pragma('journal_mode = WAL');
+const db = new DatabaseSync(config.db.path);
+db.exec('PRAGMA journal_mode = WAL;');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS tokens (

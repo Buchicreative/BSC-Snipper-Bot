@@ -139,7 +139,15 @@ npm run dev
 
 1. Push this repo to GitHub.
 2. In Railway: New Project → Deploy from GitHub repo → select this repo.
-3. Railway auto-detects Node via Nixpacks (no Dockerfile needed).
+3. Railway auto-detects Node via Nixpacks (no Dockerfile needed). Requires
+   Node 22.5+ (set in `package.json` engines) — needed for the built-in
+   `node:sqlite` module. The database layer uses this instead of
+   `better-sqlite3` specifically to avoid native-module build failures on
+   hosts like Railway where the available Node version can outpace
+   `better-sqlite3`'s prebuilt binaries and force a from-source compile
+   (which needs a full C++ toolchain that isn't guaranteed to be present).
+   You'll see a one-line `ExperimentalWarning: SQLite is an experimental
+   feature` in the logs on startup — that's expected and harmless.
 4. Add the variables from `.env.example` under Railway's Variables tab.
    Leave `TRADING_MODE=paper` until the safety checklist above is done —
    after boot, use `/mode` in Telegram to switch, no redeploy needed.

@@ -10,7 +10,6 @@
     "db:migrate": "node scripts/migrate.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
     "dotenv": "^16.6.1",
     "ethers": "^6.17.0",
     "node-cron": "^3.0.3",
@@ -22,6 +21,6 @@
     "nodemon": "^3.1.7"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.5.0"
   }
 }
