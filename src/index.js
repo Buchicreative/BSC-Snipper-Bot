@@ -13,6 +13,20 @@ const { Trader } = require('./execution/trader');
 const { PositionManager } = require('./risk/positionManager');
 const { createBot, notifyAdmin } = require('./telegram/bot');
 
+// Defense in depth: log and keep running rather than crash on something
+// unexpected slipping past a try/catch somewhere. The WSS reconnect fix
+// (resilientWsProvider.js) addresses the specific bug that caused an actual
+// crash before this was added, but this net stays regardless — a single
+// unexpected error anywhere shouldn't take down open positions' tracking.
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception — bot continues running', { error: err.message, stack: err.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection — bot continues running', {
+    reason: reason instanceof Error ? reason.message : reason,
+  });
+});
+
 async function main() {
   // Kill switch persists across restarts on purpose — if it was tripped
   // before a crash/redeploy, stay dead until someone clears it manually

@@ -1,6 +1,7 @@
 const { ethers } = require('ethers');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { createResilientWsProvider } = require('../utils/resilientWsProvider');
 
 /**
  * Listens for new pair creation on PancakeSwap V2 factory. This catches
@@ -13,17 +14,6 @@ const PANCAKE_FACTORY_ABI = [
 ];
 
 function startPancakeGraduationListener({ onPairCreated }) {
-  const provider = new ethers.WebSocketProvider(config.rpc.wss);
-  const factory = new ethers.Contract(
-    config.contracts.pancakeFactory,
-    PANCAKE_FACTORY_ABI,
-    provider
-  );
-
-  logger.info('PancakeSwap graduation listener starting', {
-    factory: config.contracts.pancakeFactory,
-  });
-
   const handler = (token0, token1, pair, _, event) => {
     // One side of the pair is usually WBNB — the other is the actual token.
     const wbnb = config.contracts.wbnb.toLowerCase();
@@ -45,13 +35,17 @@ function startPancakeGraduationListener({ onPairCreated }) {
     });
   };
 
-  factory.on('PairCreated', handler);
+  const resilientProvider = createResilientWsProvider(config.rpc.wss, (provider) => {
+    const factory = new ethers.Contract(config.contracts.pancakeFactory, PANCAKE_FACTORY_ABI, provider);
+    factory.on('PairCreated', handler);
+    logger.info('PancakeSwap graduation listener (re)attached', {
+      factory: config.contracts.pancakeFactory,
+    });
+    return () => factory.off('PairCreated', handler);
+  });
 
   return {
-    stop: () => {
-      factory.off('PairCreated', handler);
-      provider.destroy();
-    },
+    stop: () => resilientProvider.stop(),
   };
 }
 

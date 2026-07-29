@@ -16,7 +16,7 @@ module.exports = {
 
   rpc: {
     http: process.env.BSC_RPC_HTTP || 'https://bsc-dataseed.binance.org',
-    wss: process.env.BSC_RPC_WSS || 'wss://bsc-ws-node.nariox.org:443',
+    wss: process.env.BSC_RPC_WSS || 'wss://bsc-rpc.publicnode.com',
   },
 
   wallet: {

@@ -1,6 +1,7 @@
 const { ethers } = require('ethers');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { createResilientWsProvider } = require('../utils/resilientWsProvider');
 
 /**
  * Listens for new token creation events on four.meme's TokenManager2 contract.
@@ -34,11 +35,6 @@ const FOUR_MEME_FACTORY_ABI = [
 function startFourMemeListener({ onTokenCreated }) {
   const factoryAddress = config.contracts.fourMemeFactory || FOUR_MEME_TOKEN_MANAGER_ADDRESS;
 
-  const provider = new ethers.WebSocketProvider(config.rpc.wss);
-  const factory = new ethers.Contract(factoryAddress, FOUR_MEME_FACTORY_ABI, provider);
-
-  logger.info('four.meme listener starting', { factory: factoryAddress });
-
   const handler = (creator, token, requestId, name, symbol, totalSupply, launchTime, launchFee, event) => {
     logger.info('four.meme: new token detected', { token, name, symbol });
     onTokenCreated({
@@ -53,13 +49,15 @@ function startFourMemeListener({ onTokenCreated }) {
     });
   };
 
-  factory.on('TokenCreate', handler);
+  const resilientProvider = createResilientWsProvider(config.rpc.wss, (provider) => {
+    const factory = new ethers.Contract(factoryAddress, FOUR_MEME_FACTORY_ABI, provider);
+    factory.on('TokenCreate', handler);
+    logger.info('four.meme listener (re)attached', { factory: factoryAddress });
+    return () => factory.off('TokenCreate', handler);
+  });
 
   return {
-    stop: () => {
-      factory.off('TokenCreate', handler);
-      provider.destroy();
-    },
+    stop: () => resilientProvider.stop(),
   };
 }
 
