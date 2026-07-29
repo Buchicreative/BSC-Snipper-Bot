@@ -1,7 +1,5 @@
 const { ethers } = require('ethers');
 const config = require('../config');
-const settings = require('../utils/settings');
-const botState = require('../utils/botState');
 const logger = require('../utils/logger');
 
 const ROUTER_ABI = [
@@ -16,29 +14,23 @@ const ERC20_ABI = [
   'function balanceOf(address account) external view returns (uint256)',
 ];
 
+/**
+ * One Trader per user, per operation — cheap to construct (just wraps a
+ * couple of ethers.Contract instances), so no need to cache instances
+ * across calls. wallet is an ethers.Wallet already connected to a provider
+ * (from userWallets.getWallet(chatId, provider)), or null for a user who
+ * hasn't registered a wallet yet (paper mode only, in that case).
+ */
 class Trader {
-  constructor(provider) {
+  constructor(provider, wallet, mode) {
     this.provider = provider;
+    this.wallet = wallet;
+    this.mode = mode; // 'paper' | 'live'
 
-    // Wallet is created up front whenever a key is available, regardless of
-    // the starting mode — this way /mode can flip paper <-> live at runtime
-    // without recreating the Trader. botState.setMode() itself already
-    // refuses to switch to 'live' if no key was ever provided.
-    if (config.wallet.privateKey) {
-      this.wallet = new ethers.Wallet(config.wallet.privateKey, provider);
-      this.routerWithSigner = new ethers.Contract(
-        config.contracts.pancakeRouter,
-        ROUTER_ABI,
-        this.wallet
-      );
+    if (wallet) {
+      this.routerWithSigner = new ethers.Contract(config.contracts.pancakeRouter, ROUTER_ABI, wallet);
     }
     this.routerReadOnly = new ethers.Contract(config.contracts.pancakeRouter, ROUTER_ABI, provider);
-
-    logger.info(`Trader initialized (starting mode: ${botState.getMode().toUpperCase()})`);
-  }
-
-  get mode() {
-    return botState.getMode();
   }
 
   async getWalletBalanceBnb() {
@@ -59,7 +51,7 @@ class Trader {
     return feeData.gasPrice && feeData.gasPrice < maxGasPrice ? feeData.gasPrice : maxGasPrice;
   }
 
-  async buy(tokenAddress, amountBnb) {
+  async buy(tokenAddress, amountBnb, { slippageBps = 300 } = {}) {
     const path = [config.contracts.wbnb, tokenAddress];
     const amountIn = ethers.parseEther(amountBnb.toString());
 
@@ -67,7 +59,7 @@ class Trader {
     try {
       const amounts = await this.routerReadOnly.getAmountsOut(amountIn, path);
       const expectedOut = amounts[1];
-      const slippageFactor = BigInt(10000 - settings.get('slippageBps'));
+      const slippageFactor = BigInt(10000 - slippageBps);
       amountOutMin = (expectedOut * slippageFactor) / 10000n;
     } catch (err) {
       logger.warn('Could not fetch quote, proceeding with amountOutMin = 0', {
@@ -82,7 +74,7 @@ class Trader {
     }
 
     if (!this.wallet) {
-      throw new Error('Cannot execute live buy: no WALLET_PRIVATE_KEY configured');
+      throw new Error('Cannot execute live buy: no wallet registered for this user');
     }
 
     const deadline = Math.floor(Date.now() / 1000) + 60;
@@ -103,7 +95,7 @@ class Trader {
     return { simulated: false, tokenAddress, amountBnb, txHash: tx.hash };
   }
 
-  async sell(tokenAddress, tokenAmount) {
+  async sell(tokenAddress, tokenAmount, { slippageBps = 300 } = {}) {
     const path = [tokenAddress, config.contracts.wbnb];
 
     if (this.mode === 'paper') {
@@ -112,7 +104,7 @@ class Trader {
     }
 
     if (!this.wallet) {
-      throw new Error('Cannot execute live sell: no WALLET_PRIVATE_KEY configured');
+      throw new Error('Cannot execute live sell: no wallet registered for this user');
     }
 
     const tokenContractRead = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
@@ -131,7 +123,7 @@ class Trader {
     try {
       const amounts = await this.routerReadOnly.getAmountsOut(tokenAmount, path);
       const expectedOut = amounts[1];
-      const slippageFactor = BigInt(10000 - settings.get('slippageBps'));
+      const slippageFactor = BigInt(10000 - slippageBps);
       amountOutMin = (expectedOut * slippageFactor) / 10000n;
     } catch (err) {
       logger.warn('Could not fetch sell quote, proceeding with amountOutMin = 0', {

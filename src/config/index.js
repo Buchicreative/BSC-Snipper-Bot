@@ -11,16 +11,11 @@ function required(name, fallback = undefined) {
 module.exports = {
   telegram: {
     botToken: required('TELEGRAM_BOT_TOKEN'),
-    adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || null,
   },
 
   rpc: {
     http: process.env.BSC_RPC_HTTP || 'https://bsc-dataseed.binance.org',
     wss: process.env.BSC_RPC_WSS || 'wss://bsc-rpc.publicnode.com',
-  },
-
-  wallet: {
-    privateKey: process.env.WALLET_PRIVATE_KEY || null, // required only for live mode
   },
 
   contracts: {
@@ -31,18 +26,34 @@ module.exports = {
   },
 
   trading: {
-    // Initial mode on first-ever boot only — after that, botState.js persists
-    // the live value in the DB so /mode can switch it without a restart.
-    mode: (process.env.TRADING_MODE || 'paper').toLowerCase(), // 'paper' | 'live'
     maxGasPriceGwei: parseFloat(process.env.MAX_GAS_PRICE_GWEI || '5'),
-    // Everything else (trade size, gas reserve, max positions, liquidity/market
-    // cap bounds, holder %, TP/SL, slippage) is runtime-adjustable via Telegram
-    // and lives in src/utils/settings.js, seeded with its own defaults there.
+    // Trading mode, trade size, gas reserve, max positions, liquidity/market
+    // cap bounds, holder %, TP/SL, and slippage are ALL per-user now — see
+    // src/utils/userSettings.js and src/utils/userBotState.js. Each Telegram
+    // user who imports/generates a wallet gets their own independent copy
+    // of every one of these, defaulting to paper mode.
   },
 
   db: {
     path: process.env.DB_PATH || './data/bot.db',
   },
+
+  // Multi-user wallet support — required for /generatewallet, /importwallet,
+  // and anything that touches a stored private key. A 64-char hex string
+  // (32 bytes). Generate one with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  // Losing this key means every stored wallet becomes unrecoverable — back
+  // it up somewhere other than just Railway's env vars.
+  walletEncryptionKey: process.env.WALLET_ENCRYPTION_KEY || null,
+
+  // Comma-separated Telegram numeric user IDs allowed to import/generate a
+  // wallet and trade. Get your own ID from @userinfobot on Telegram. Anyone
+  // not on this list can still message the bot, but every command is
+  // refused with a polite "not authorized" reply.
+  allowedTelegramUserIds: (process.env.ALLOWED_TELEGRAM_USER_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
 
   // Optional — powers the holder concentration check (top-holder %) via
   // Etherscan's unified V2 API (one key works across all EVM chains,

@@ -1,13 +1,16 @@
 const { Telegraf } = require('telegraf');
 const config = require('../config');
 const db = require('../utils/db');
-const settings = require('../utils/settings');
+const userSettings = require('../utils/userSettings');
+const userBotState = require('../utils/userBotState');
+const userWallets = require('../utils/userWallets');
 const botState = require('../utils/botState');
 const stats = require('../utils/stats');
 const priceFeed = require('../utils/priceFeed');
 const logger = require('../utils/logger');
+const { getTraderForUser } = require('../execution/traderFactory');
+const positionManager = require('../risk/positionManager');
 
-// key -> { settingKey, parse, label }
 const SET_COMMANDS = {
   setsize: { key: 'tradeSizeUsd', label: '$ per trade' },
   setgasreserve: { key: 'gasReserveUsd', label: '$ always kept as gas buffer' },
@@ -38,14 +41,38 @@ function formatSettings(s) {
   );
 }
 
-function createBot({ positionManager }) {
+const SECURITY_NOTICE =
+  'This bot holds your private key encrypted in its database so it can trade automatically for you. ' +
+  'That means whoever controls this deployment (and its encryption key) can technically access your funds — ' +
+  'the same trust model as any custodial trading bot. Keep only what you\'re willing to risk in this wallet, ' +
+  'and move profits out to a wallet you control directly.';
+
+function createBot({ provider }) {
   const bot = new Telegraf(config.telegram.botToken);
 
+  // --- Access control: only allowlisted Telegram user IDs get past here ---
+  bot.use((ctx, next) => {
+    if (!ctx.from) return next();
+    if (!userWallets.isAllowlisted(ctx.from.id)) {
+      ctx.reply('This bot is restricted to approved users. Ask the operator to add your Telegram ID to the allowlist.');
+      return;
+    }
+    return next();
+  });
+
   bot.start((ctx) => {
+    const hasWallet = userWallets.hasWallet(ctx.from.id);
     ctx.reply(
-      `BSC Sniper Bot online — four.meme + PancakeSwap graduation\n` +
-        `Mode: ${botState.getMode().toUpperCase()}\n\n` +
-        `Commands:\n` +
+      `BSC Sniper Bot — four.meme + PancakeSwap graduation\n` +
+        `Wallet: ${hasWallet ? userWallets.getWalletAddress(ctx.from.id) : 'none — use /generatewallet or /importwallet'}\n` +
+        `Mode: ${userBotState.getMode(ctx.from.id).toUpperCase()}\n\n` +
+        `Wallet commands:\n` +
+        `/generatewallet - create a new wallet for you\n` +
+        `/importwallet <privateKey or seed phrase> - use your own wallet\n` +
+        `/wallet - show your address and BNB balance\n` +
+        `/exportkey confirm - reveal your private key (auto-deletes after 60s)\n` +
+        `/deletewallet confirm - remove your stored wallet\n\n` +
+        `Trading commands:\n` +
         `/setsize <usd> - $ per trade\n` +
         `/setgasreserve <usd> - $ always kept untouched as gas buffer\n` +
         `/setmaxpositions <n> - max simultaneous open positions\n` +
@@ -61,19 +88,138 @@ function createBot({ positionManager }) {
         `/balance - show wallet BNB balance\n` +
         `/positions - show open positions\n` +
         `/history - show recent closed trades\n` +
-        `/clearhistory confirm - permanently wipe trade history + stats\n` +
-        `/pause - stop opening new positions\n` +
-        `/resume - resume trading + reset circuit breaker\n` +
-        `/mode <paper|live> - switch trading mode\n` +
-        `/stop - close all positions and pause\n` +
-        `/closeall - close all positions but keep trading (no pause)\n` +
-        `/killswitch confirm - actually stop the deployment (not just pause)\n` +
+        `/clearhistory confirm - permanently wipe your trade history + stats\n` +
+        `/pause - stop opening new positions for you\n` +
+        `/resume - resume trading + reset your circuit breaker\n` +
+        `/mode <paper|live> - switch your trading mode\n` +
+        `/stop - close all your positions and pause\n` +
+        `/closeall - close all your positions but keep trading (no pause)\n` +
+        `/killswitch confirm - stop the ENTIRE deployment for all users\n` +
         `/buy <token> <amountBnb> - manual buy\n` +
-        `/sell <token> <amount> - manual sell`
+        `/sell <token> <amount> - manual sell\n` +
+        `/settings - view all your current thresholds\n` +
+        `/status - your mode, pause state, position count, all thresholds`
     );
   });
 
-  // --- Generic handler for all /set___ <value> commands ---
+  // --- Wallet management ---
+
+  bot.command('generatewallet', (ctx) => {
+    const already = userWallets.hasWallet(ctx.from.id);
+    const args = ctx.message.text.split(' ').filter(Boolean);
+    if (already && args[1] !== 'confirm') {
+      ctx.reply(
+        `You already have a wallet (${userWallets.getWalletAddress(ctx.from.id)}).\n` +
+          `Generating a new one replaces it — you'll lose access to the old wallet's funds unless you've already moved them out.\n` +
+          `Run /generatewallet confirm to proceed anyway.`
+      );
+      return;
+    }
+
+    try {
+      const wallet = userWallets.generateWallet(ctx.from.id, ctx.from.username);
+      ctx.reply(SECURITY_NOTICE).then(() => {
+        ctx
+          .reply(
+            `New wallet generated:\n\n` +
+              `Address: ${wallet.address}\n\n` +
+              `Private key: ${wallet.privateKey}\n\n` +
+              `Seed phrase: ${wallet.mnemonic}\n\n` +
+              `⚠️ Save these somewhere safe RIGHT NOW — this message will self-delete in 60 seconds and this is the only time you'll see the private key/seed phrase here. Fund this address with a small amount of BNB to start.`
+          )
+          .then((sentMsg) => {
+            setTimeout(() => {
+              ctx.deleteMessage(sentMsg.message_id).catch(() => {});
+            }, 60000);
+          });
+      });
+    } catch (err) {
+      ctx.reply(`Failed to generate wallet: ${err.message}`);
+    }
+  });
+
+  bot.command('importwallet', async (ctx) => {
+    const parts = ctx.message.text.split(' ');
+    const secret = parts.slice(1).join(' ').trim();
+
+    // Delete the incoming message immediately — it contains the secret.
+    // Best-effort: works in private chats, may fail elsewhere, either way
+    // we don't want to block on it.
+    ctx.deleteMessage().catch(() => {});
+
+    if (!secret) {
+      ctx.reply('Usage: /importwallet <privateKey or seed phrase>\n(send this as a private DM to the bot)');
+      return;
+    }
+
+    if (userWallets.hasWallet(ctx.from.id)) {
+      ctx.reply(
+        `You already have a wallet registered. Run /deletewallet confirm first if you want to replace it with a different one.`
+      );
+      return;
+    }
+
+    try {
+      const wallet = userWallets.importWallet(ctx.from.id, ctx.from.username, secret);
+      await ctx.reply(SECURITY_NOTICE);
+      ctx.reply(`Wallet imported: ${wallet.address}`);
+    } catch (err) {
+      ctx.reply(`Failed to import wallet: ${err.message}`);
+    }
+  });
+
+  bot.command('wallet', async (ctx) => {
+    if (!userWallets.hasWallet(ctx.from.id)) {
+      ctx.reply('No wallet registered yet. Use /generatewallet or /importwallet.');
+      return;
+    }
+    try {
+      const trader = getTraderForUser(ctx.from.id, provider);
+      const balanceBnb = await trader.getWalletBalanceBnb();
+      const bnbUsdPrice = await priceFeed.getBnbUsdPrice().catch(() => null);
+      const usdStr = bnbUsdPrice ? ` (~$${(balanceBnb * bnbUsdPrice).toFixed(2)})` : '';
+      ctx.reply(
+        `Address: ${userWallets.getWalletAddress(ctx.from.id)}\nBalance: ${balanceBnb.toFixed(4)} BNB${usdStr}`
+      );
+    } catch (err) {
+      ctx.reply(`Failed to fetch wallet info: ${err.message}`);
+    }
+  });
+
+  bot.command('exportkey', (ctx) => {
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    if (parts[1] !== 'confirm') {
+      ctx.reply(
+        'This reveals your raw private key in this chat.\nRun /exportkey confirm to proceed — the reply will auto-delete after 60 seconds.'
+      );
+      return;
+    }
+    const privateKey = userWallets.exportPrivateKey(ctx.from.id);
+    if (!privateKey) {
+      ctx.reply('No wallet registered.');
+      return;
+    }
+    ctx.reply(`Private key: ${privateKey}\n\n⚠️ This message self-deletes in 60 seconds.`).then((sentMsg) => {
+      setTimeout(() => {
+        ctx.deleteMessage(sentMsg.message_id).catch(() => {});
+      }, 60000);
+    });
+  });
+
+  bot.command('deletewallet', (ctx) => {
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    if (parts[1] !== 'confirm') {
+      ctx.reply(
+        'This permanently removes your stored wallet from this bot. Make sure you\'ve moved out any funds first — this does NOT sweep them for you.\nRun /deletewallet confirm to proceed.'
+      );
+      return;
+    }
+    userWallets.deleteWallet(ctx.from.id);
+    ctx.reply('Wallet removed.');
+  });
+
+  // --- Settings ---
+
   for (const [command, { key, label }] of Object.entries(SET_COMMANDS)) {
     bot.command(command, (ctx) => {
       const parts = ctx.message.text.split(' ').filter(Boolean);
@@ -88,7 +234,7 @@ function createBot({ positionManager }) {
         return;
       }
       try {
-        const updated = settings.set(key, value);
+        const updated = userSettings.set(ctx.from.id, key, value);
         ctx.reply(`${label} set to ${updated}`);
       } catch (err) {
         ctx.reply(`Failed to update: ${err.message}`);
@@ -97,21 +243,25 @@ function createBot({ positionManager }) {
   }
 
   bot.command('settings', (ctx) => {
-    ctx.reply(`Current settings:\n${formatSettings(settings.getAll())}`);
+    ctx.reply(`Your settings:\n${formatSettings(userSettings.getAll(ctx.from.id))}`);
   });
 
   bot.command('status', (ctx) => {
-    const s = settings.getAll();
+    const s = userSettings.getAll(ctx.from.id);
+    const hasWallet = userWallets.hasWallet(ctx.from.id);
     ctx.reply(
-      `Mode: ${botState.getMode().toUpperCase()}${botState.isPaused() ? ' (PAUSED)' : ''}\n` +
-        `Open positions: ${positionManager.count()} / ${s.maxPositions}\n\n` +
+      `Wallet: ${hasWallet ? userWallets.getWalletAddress(ctx.from.id) : 'none registered'}\n` +
+        `Mode: ${userBotState.getMode(ctx.from.id).toUpperCase()}${userBotState.isPaused(ctx.from.id) ? ' (PAUSED)' : ''}\n` +
+        `Open positions: ${positionManager.countOpenPositions(ctx.from.id)} / ${s.maxPositions}\n\n` +
         `${formatSettings(s)}`
     );
   });
 
+  // --- Stats / positions / history ---
+
   bot.command('stats', async (ctx) => {
     try {
-      const s = await stats.getStatsWithUsd();
+      const s = await stats.getStatsWithUsd(ctx.from.id);
       ctx.reply(
         `Trades: ${s.tradeCount} (${s.openCount} open, ${s.closedCount} closed)\n` +
           `Spent: ${s.spentBnb.toFixed(4)} BNB${s.spentUsd !== null ? ` (~$${s.spentUsd.toFixed(2)})` : ''}\n` +
@@ -124,8 +274,13 @@ function createBot({ positionManager }) {
   });
 
   bot.command('balance', async (ctx) => {
+    if (!userWallets.hasWallet(ctx.from.id)) {
+      ctx.reply('No wallet registered yet. Use /generatewallet or /importwallet.');
+      return;
+    }
     try {
-      const balanceBnb = await positionManager.trader.getWalletBalanceBnb();
+      const trader = getTraderForUser(ctx.from.id, provider);
+      const balanceBnb = await trader.getWalletBalanceBnb();
       const bnbUsdPrice = await priceFeed.getBnbUsdPrice().catch(() => null);
       const usdStr = bnbUsdPrice ? ` (~$${(balanceBnb * bnbUsdPrice).toFixed(2)})` : '';
       ctx.reply(`Wallet balance: ${balanceBnb.toFixed(4)} BNB${usdStr}`);
@@ -135,7 +290,7 @@ function createBot({ positionManager }) {
   });
 
   bot.command('positions', (ctx) => {
-    const rows = db.prepare(`SELECT * FROM positions WHERE status = 'open'`).all();
+    const rows = positionManager.getOpenPositions(ctx.from.id);
     if (rows.length === 0) {
       ctx.reply('No open positions.');
       return;
@@ -148,8 +303,10 @@ function createBot({ positionManager }) {
 
   bot.command('history', (ctx) => {
     const rows = db
-      .prepare(`SELECT * FROM positions WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 10`)
-      .all();
+      .prepare(
+        `SELECT * FROM positions WHERE chat_id = ? AND status = 'closed' ORDER BY closed_at DESC LIMIT 10`
+      )
+      .all(String(ctx.from.id));
     if (rows.length === 0) {
       ctx.reply('No closed trades yet.');
       return;
@@ -161,21 +318,22 @@ function createBot({ positionManager }) {
   bot.command('clearhistory', (ctx) => {
     const parts = ctx.message.text.split(' ').filter(Boolean);
     if (parts[1] !== 'confirm') {
-      ctx.reply('This permanently wipes trade history and stats.\nRun /clearhistory confirm to proceed.');
+      ctx.reply('This permanently wipes your trade history and stats.\nRun /clearhistory confirm to proceed.');
       return;
     }
-    stats.clearHistory();
-    positionManager.openPositions.clear();
+    stats.clearHistory(ctx.from.id);
     ctx.reply('Trade history and stats wiped.');
   });
 
+  // --- Pause / resume / mode ---
+
   bot.command('pause', (ctx) => {
-    botState.pause();
-    ctx.reply('Paused — no new positions will be opened. Existing positions are untouched.');
+    userBotState.pause(ctx.from.id);
+    ctx.reply('Paused — no new positions will be opened for you. Existing positions are untouched.');
   });
 
   bot.command('resume', (ctx) => {
-    botState.resume();
+    userBotState.resume(ctx.from.id);
     ctx.reply('Resumed — trading active again, circuit breaker reset.');
   });
 
@@ -183,54 +341,39 @@ function createBot({ positionManager }) {
     const parts = ctx.message.text.split(' ').filter(Boolean);
     const newMode = parts[1]?.toLowerCase();
     if (!newMode) {
-      ctx.reply(`Current mode: ${botState.getMode().toUpperCase()}\nUsage: /mode <paper|live>`);
+      ctx.reply(`Current mode: ${userBotState.getMode(ctx.from.id).toUpperCase()}\nUsage: /mode <paper|live>`);
       return;
     }
     try {
-      const mode = botState.setMode(newMode);
+      const mode = userBotState.setMode(ctx.from.id, newMode, userWallets.hasWallet(ctx.from.id));
       ctx.reply(`Mode switched to ${mode.toUpperCase()}.`);
     } catch (err) {
       ctx.reply(`Failed to switch mode: ${err.message}`);
     }
   });
 
+  // --- Stop / closeall ---
+
   bot.command('stop', async (ctx) => {
-    ctx.reply('Closing all open positions and pausing...');
-    const { closed, failed } = await positionManager.closeAllPositions('stop_command');
-    botState.pause();
+    ctx.reply('Closing all your open positions and pausing...');
+    const trader = getTraderForUser(ctx.from.id, provider);
+    const { closed, failed } = await positionManager.closeAllPositions(ctx.from.id, trader, 'stop_command');
+    userBotState.pause(ctx.from.id);
     ctx.reply(
-      `Closed ${closed.length} position(s).${failed.length ? ` Failed: ${failed.length}.` : ''}\nBot paused.`
+      `Closed ${closed.length} position(s).${failed.length ? ` Failed: ${failed.length}.` : ''}\nPaused.`
     );
   });
 
   bot.command('closeall', async (ctx) => {
-    ctx.reply('Closing all open positions (trading stays active)...');
-    const { closed, failed } = await positionManager.closeAllPositions('closeall_command');
+    ctx.reply('Closing all your open positions (trading stays active)...');
+    const trader = getTraderForUser(ctx.from.id, provider);
+    const { closed, failed } = await positionManager.closeAllPositions(ctx.from.id, trader, 'closeall_command');
     ctx.reply(
       `Closed ${closed.length} position(s).${failed.length ? ` Failed: ${failed.length}.` : ''}\nStill trading.`
     );
   });
 
-  bot.command('killswitch', (ctx) => {
-    const parts = ctx.message.text.split(' ').filter(Boolean);
-    if (parts[1] !== 'confirm') {
-      ctx.reply(
-        'This stops the bot process entirely (not just a pause) — open positions are left as-is.\n' +
-          'Run /killswitch confirm to proceed.'
-      );
-      return;
-    }
-    botState.kill();
-    ctx.reply('Kill switch activated. Shutting down now.').finally(() => {
-      logger.warn('Process exiting due to /killswitch');
-      // NOTE: if Railway's restart policy is set to ON_FAILURE with retries
-      // remaining, it may restart the container — the persisted "killed"
-      // flag in bot_state makes the bot exit again immediately on boot
-      // rather than resume trading. To fully stop the deployment, also
-      // stop/remove the service in the Railway dashboard.
-      process.exit(0);
-    });
-  });
+  // --- Manual buy/sell ---
 
   bot.command('buy', async (ctx) => {
     const parts = ctx.message.text.split(' ').filter(Boolean);
@@ -240,10 +383,11 @@ function createBot({ positionManager }) {
       return;
     }
     try {
-      const position = await positionManager.openPosition(tokenAddress, parseFloat(amountStr));
+      const trader = getTraderForUser(ctx.from.id, provider);
+      const position = await positionManager.openPosition(ctx.from.id, trader, tokenAddress, parseFloat(amountStr));
       ctx.reply(`Buy submitted for ${tokenAddress}. Position id: ${position.id}`);
     } catch (err) {
-      logger.error('Manual buy failed', { error: err.message });
+      logger.error('Manual buy failed', { chatId: String(ctx.from.id), error: err.message });
       ctx.reply(`Buy failed: ${err.message}`);
     }
   });
@@ -256,27 +400,47 @@ function createBot({ positionManager }) {
       return;
     }
     try {
-      await positionManager.closePosition(tokenAddress, BigInt(amountStr));
+      const trader = getTraderForUser(ctx.from.id, provider);
+      await positionManager.closePosition(ctx.from.id, trader, tokenAddress, BigInt(amountStr));
       ctx.reply(`Sell submitted for ${tokenAddress}.`);
     } catch (err) {
-      logger.error('Manual sell failed', { error: err.message });
+      logger.error('Manual sell failed', { chatId: String(ctx.from.id), error: err.message });
       ctx.reply(`Sell failed: ${err.message}`);
     }
   });
 
-  bot.catch((err, ctx) => {
+  bot.command('killswitch', (ctx) => {
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    if (parts[1] !== 'confirm') {
+      ctx.reply(
+        'This stops the ENTIRE deployment for ALL users, not just you — open positions for everyone are left as-is.\n' +
+          'Run /killswitch confirm to proceed.'
+      );
+      return;
+    }
+    botState.kill();
+    ctx.reply('Kill switch activated. Shutting down the whole deployment now.').finally(() => {
+      logger.warn('Process exiting due to /killswitch', { triggeredBy: String(ctx.from.id) });
+      // NOTE: if Railway's restart policy is set to ON_FAILURE with retries
+      // remaining, it may restart the container — the persisted "killed"
+      // flag in bot_state makes the bot exit again immediately on boot
+      // rather than resume trading. To fully stop the deployment, also
+      // stop/remove the service in the Railway dashboard.
+      process.exit(0);
+    });
+  });
+
+  bot.catch((err) => {
     logger.error('Telegram bot error', { error: err.message });
   });
 
   return bot;
 }
 
-function notifyAdmin(bot, message) {
-  if (config.telegram.adminChatId) {
-    bot.telegram.sendMessage(config.telegram.adminChatId, message).catch((err) => {
-      logger.error('Failed to notify admin', { error: err.message });
-    });
-  }
+function notifyUser(bot, chatId, message) {
+  bot.telegram.sendMessage(chatId, message).catch((err) => {
+    logger.error('Failed to notify user', { chatId: String(chatId), error: err.message });
+  });
 }
 
-module.exports = { createBot, notifyAdmin };
+module.exports = { createBot, notifyUser };

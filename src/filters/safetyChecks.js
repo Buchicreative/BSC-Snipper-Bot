@@ -1,6 +1,5 @@
 const { ethers } = require('ethers');
 const config = require('../config');
-const settings = require('../utils/settings');
 const priceFeed = require('../utils/priceFeed');
 const honeypotChecker = require('../utils/honeypotChecker');
 const liquidityLock = require('../utils/liquidityLock');
@@ -50,15 +49,10 @@ async function getPairReserves(tokenAddress, provider) {
   return {
     pairAddress,
     wbnbReserveBnb: parseFloat(ethers.formatEther(wbnbReserve)),
-    tokenReserveRaw: tokenReserve, // still in raw token decimals
+    tokenReserveRaw: tokenReserve,
   };
 }
 
-/**
- * Estimates liquidity (BNB-side reserve, converted to USD) and market cap
- * (token price implied by the pair, times total supply, converted to USD).
- * Both return 0 if there's no PancakeSwap pair yet.
- */
 async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
   const reserves = await getPairReserves(tokenAddress, provider);
   if (!reserves) {
@@ -71,9 +65,7 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
   const [totalSupplyRaw, decimals] = await Promise.all([token.totalSupply(), token.decimals()]);
 
-  const tokenReserveFormatted = parseFloat(
-    ethers.formatUnits(reserves.tokenReserveRaw, decimals)
-  );
+  const tokenReserveFormatted = parseFloat(ethers.formatUnits(reserves.tokenReserveRaw, decimals));
   const totalSupplyFormatted = parseFloat(ethers.formatUnits(totalSupplyRaw, decimals));
 
   let marketCapUsd = 0;
@@ -86,169 +78,158 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
 }
 
 /**
- * Runs a battery of safety checks on a candidate token before buying.
- * Returns { passed: boolean, report: {...}, reasons: [...] }
- *
- * These checks are heuristic, not a guarantee — always paper-trade new
- * logic before flipping /mode to live.
+ * Gathers every raw fact about a candidate token ONCE — ownership, liquidity,
+ * market cap, honeypot/tax simulation, LP lock %, holder concentration,
+ * source verification. This is the expensive part (RPC calls + two external
+ * APIs), and none of it depends on any individual user's thresholds, so it's
+ * computed once per candidate and shared across every user's evaluation via
+ * evaluateForUser() below — instead of repeating all these calls per user.
  */
-async function runSafetyChecks(tokenAddress, provider) {
-  const reasons = [];
-  const report = {};
-  let pairAddressForLockCheck = null;
-
+async function gatherTokenData(tokenAddress, provider) {
+  const data = { tokenAddress };
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
 
-  // 1. Ownership check — is ownership renounced?
+  // Ownership
   try {
-    const owner = await token.owner();
-    report.owner = owner;
-    if (owner !== ethers.ZeroAddress) {
-      reasons.push('ownership_not_renounced');
-    }
+    data.owner = await token.owner();
   } catch {
-    // No owner() function — could be fine (no ownership pattern) or a proxy; note it.
-    report.owner = 'unknown';
+    data.owner = 'unknown';
   }
 
-  // 2. Liquidity + market cap checks (USD-denominated, matching /setminliquidity,
-  // /setmaxmarketcap, /setminmarketcap). Only meaningful post-graduation —
-  // four.meme tokens pre-graduation won't have a PancakeSwap pair yet, so
-  // both read as 0 and get rejected by minLiquidityUsd until they graduate.
-  // Resolves the pair address, reused below by the holder concentration and
-  // liquidity lock checks.
+  // Liquidity + market cap (also resolves the pair address, reused below)
   try {
     const { liquidityUsd, marketCapUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
-    pairAddressForLockCheck = pairAddress;
-    const minLiquidity = settings.get('minLiquidityUsd');
-    const maxMarketCap = settings.get('maxMarketCapUsd');
-    const minMarketCap = settings.get('minMarketCapUsd');
-
-    report.liquidityUsd = liquidityUsd;
-    report.marketCapUsd = marketCapUsd;
-    report.minLiquidityRequired = minLiquidity;
-
-    if (liquidityUsd < minLiquidity) {
-      reasons.push('liquidity_below_minimum');
-    }
-    if (maxMarketCap > 0 && marketCapUsd > maxMarketCap) {
-      reasons.push('market_cap_above_maximum');
-    }
-    if (minMarketCap > 0 && marketCapUsd < minMarketCap) {
-      reasons.push('market_cap_below_minimum');
-    }
+    data.liquidityUsd = liquidityUsd;
+    data.marketCapUsd = marketCapUsd;
+    data.pairAddress = pairAddress;
   } catch (err) {
     logger.warn('Liquidity/market cap read failed', { tokenAddress, error: err.message });
-    reasons.push('liquidity_read_failed');
+    data.liquidityReadFailed = true;
   }
 
-  // 3. Holder concentration — is any single wallet over maxHolderPercent?
-  // Real check via Etherscan's unified API (chainid=56 for BSC) — requires
-  // ETHERSCAN_API_KEY to be set. Without a key, or if the call fails (rate
-  // limit, plan tier, token too new to be indexed), this is a soft failure:
-  // logged and visible in the report, doesn't block the buy on its own.
+  // Holder concentration (needs ETHERSCAN_API_KEY; soft-fails otherwise)
   try {
     const totalSupplyRaw = await token.totalSupply();
     const holderResult = await holderConcentration.getTopHolderPercent(tokenAddress, totalSupplyRaw, {
-      pairAddress: pairAddressForLockCheck,
+      pairAddress: data.pairAddress,
     });
-
-    report.maxHolderPercent = settings.get('maxHolderPercent');
-
     if (holderResult.checked) {
-      report.topHolderPercent = holderResult.topHolderPercent;
-      report.topHolderAddress = holderResult.topHolderAddress;
-      if (holderResult.topHolderPercent > settings.get('maxHolderPercent')) {
-        reasons.push('holder_concentration_above_maximum');
-      }
+      data.topHolderPercent = holderResult.topHolderPercent;
+      data.topHolderAddress = holderResult.topHolderAddress;
     } else {
-      report.holderConcentrationCheckSkipped = holderResult.reason;
-      reasons.push('holder_concentration_check_unavailable');
+      data.holderConcentrationCheckSkipped = holderResult.reason;
     }
   } catch (err) {
     logger.warn('Holder concentration check errored', { tokenAddress, error: err.message });
-    reasons.push('holder_concentration_check_unavailable');
+    data.holderConcentrationCheckSkipped = err.message;
   }
 
-  // 4. Honeypot + buy/sell tax check — actually simulates a buy+sell via
-  // honeypot.is's public API, which catches contracts that let you buy but
-  // block or heavily tax selling. This is a real simulation, not a static
-  // heuristic, though it depends on a third-party service being up.
+  // Honeypot + tax simulation (honeypot.is)
   try {
     const hp = await honeypotChecker.checkHoneypot(tokenAddress);
-    report.honeypotChecked = hp.checked;
-
+    data.honeypotChecked = hp.checked;
     if (hp.checked) {
-      report.isHoneypot = hp.isHoneypot;
-      report.honeypotReason = hp.honeypotReason;
-      report.buyTaxPct = hp.buyTaxPct;
-      report.sellTaxPct = hp.sellTaxPct;
-      report.risk = hp.risk;
-      report.riskLevel = hp.riskLevel;
-
-      if (hp.isHoneypot === true) {
-        reasons.push('honeypot_detected');
-      }
-
-      const maxBuyTax = settings.get('maxBuyTaxPct');
-      const maxSellTax = settings.get('maxSellTaxPct');
-      if (hp.buyTaxPct !== null && hp.buyTaxPct > maxBuyTax) {
-        reasons.push('buy_tax_above_maximum');
-      }
-      if (hp.sellTaxPct !== null && hp.sellTaxPct > maxSellTax) {
-        reasons.push('sell_tax_above_maximum');
-      }
-    } else {
-      // Couldn't reach honeypot.is (rate limit, outage, or a token too new
-      // for them to have indexed a pair yet). Treated as a soft failure —
-      // logged and visible in the report, but doesn't block the buy on its
-      // own, since an API outage shouldn't silently halt all trading.
-      reasons.push('honeypot_check_unavailable');
+      data.isHoneypot = hp.isHoneypot;
+      data.honeypotReason = hp.honeypotReason;
+      data.buyTaxPct = hp.buyTaxPct;
+      data.sellTaxPct = hp.sellTaxPct;
+      data.risk = hp.risk;
+      data.riskLevel = hp.riskLevel;
     }
   } catch (err) {
     logger.warn('Honeypot check errored', { tokenAddress, error: err.message });
-    reasons.push('honeypot_check_unavailable');
+    data.honeypotChecked = false;
   }
 
-  // 5. Liquidity lock check — what % of LP tokens sit in a known locker
-  // contract or burn address (PinkLock, UNCX/Unicrypt, Team Finance, or
-  // sent to a dead address)? This only recognizes the lockers it knows
-  // about, so it's informational rather than a hard block: a 0% result
-  // means "not locked by a locker we recognize," not "definitely unlocked."
-  // No pair yet (pre-graduation) means nothing to check.
-  if (pairAddressForLockCheck) {
-    const lockedPercent = await liquidityLock.getLpLockedPercent(pairAddressForLockCheck, provider);
-    report.lpLockedPercent = lockedPercent;
-    if (lockedPercent === null) {
-      reasons.push('liquidity_lock_unknown');
-    } else if (lockedPercent < 50) {
-      // Informational flag only — not in the critical-failure list below.
-      reasons.push('liquidity_mostly_unlocked');
+  // LP lock % (informational)
+  if (data.pairAddress) {
+    try {
+      data.lpLockedPercent = await liquidityLock.getLpLockedPercent(data.pairAddress, provider);
+    } catch (err) {
+      logger.warn('LP lock check errored', { tokenAddress, error: err.message });
+      data.lpLockedPercent = null;
     }
   } else {
-    report.lpLockedPercent = null;
-    reasons.push('liquidity_lock_unknown');
+    data.lpLockedPercent = null;
   }
 
-  // 6. Contract verification — is source verified on BscScan? Informational
-  // only (not a critical failure) — plenty of legitimate brand-new tokens
-  // are unverified in their first few minutes after launch. Requires
-  // ETHERSCAN_API_KEY (same key as the holder concentration check).
+  // Contract verification (informational)
   try {
     const verifyResult = await contractVerification.checkSourceVerified(tokenAddress);
     if (verifyResult.checked) {
-      report.sourceVerified = verifyResult.sourceVerified;
-      report.isProxy = verifyResult.isProxy;
-      if (!verifyResult.sourceVerified) {
-        reasons.push('source_not_verified');
-      }
+      data.sourceVerified = verifyResult.sourceVerified;
+      data.isProxy = verifyResult.isProxy;
     } else {
-      report.sourceVerified = null;
-      report.contractVerificationCheckSkipped = verifyResult.reason;
+      data.sourceVerified = null;
     }
   } catch (err) {
     logger.warn('Contract verification check errored', { tokenAddress, error: err.message });
-    report.sourceVerified = null;
+    data.sourceVerified = null;
+  }
+
+  return data;
+}
+
+/**
+ * Cheap, synchronous evaluation of already-gathered token data against ONE
+ * user's thresholds. Call gatherTokenData() once per candidate, then this
+ * once per registered user — no repeated RPC/API calls.
+ *
+ * userSettings: the object returned by userSettings.getAll(chatId).
+ * Returns { passed, reasons } — reasons includes both critical (blocking)
+ * and informational (non-blocking) flags, same as before.
+ */
+function evaluateForUser(data, userSettings) {
+  const reasons = [];
+
+  if (data.owner && data.owner !== ethers.ZeroAddress && data.owner !== 'unknown') {
+    reasons.push('ownership_not_renounced');
+  }
+
+  if (data.liquidityReadFailed) {
+    reasons.push('liquidity_read_failed');
+  } else {
+    if ((data.liquidityUsd ?? 0) < userSettings.minLiquidityUsd) {
+      reasons.push('liquidity_below_minimum');
+    }
+    if (userSettings.maxMarketCapUsd > 0 && (data.marketCapUsd ?? 0) > userSettings.maxMarketCapUsd) {
+      reasons.push('market_cap_above_maximum');
+    }
+    if (userSettings.minMarketCapUsd > 0 && (data.marketCapUsd ?? 0) < userSettings.minMarketCapUsd) {
+      reasons.push('market_cap_below_minimum');
+    }
+  }
+
+  if (data.topHolderPercent !== undefined) {
+    if (data.topHolderPercent > userSettings.maxHolderPercent) {
+      reasons.push('holder_concentration_above_maximum');
+    }
+  } else {
+    reasons.push('holder_concentration_check_unavailable');
+  }
+
+  if (data.honeypotChecked) {
+    if (data.isHoneypot === true) {
+      reasons.push('honeypot_detected');
+    }
+    if (data.buyTaxPct !== null && data.buyTaxPct !== undefined && data.buyTaxPct > userSettings.maxBuyTaxPct) {
+      reasons.push('buy_tax_above_maximum');
+    }
+    if (data.sellTaxPct !== null && data.sellTaxPct !== undefined && data.sellTaxPct > userSettings.maxSellTaxPct) {
+      reasons.push('sell_tax_above_maximum');
+    }
+  } else {
+    reasons.push('honeypot_check_unavailable');
+  }
+
+  if (data.lpLockedPercent === null || data.lpLockedPercent === undefined) {
+    reasons.push('liquidity_lock_unknown');
+  } else if (data.lpLockedPercent < 50) {
+    reasons.push('liquidity_mostly_unlocked'); // informational only
+  }
+
+  if (data.sourceVerified === false) {
+    reasons.push('source_not_verified'); // informational only
   }
 
   const criticalFailures = reasons.filter((r) =>
@@ -264,11 +245,7 @@ async function runSafetyChecks(tokenAddress, provider) {
     ].includes(r)
   );
 
-  const passed = criticalFailures.length === 0;
-
-  logger.info('Safety check complete', { tokenAddress, passed, reasons });
-
-  return { passed, report, reasons };
+  return { passed: criticalFailures.length === 0, reasons };
 }
 
-module.exports = { runSafetyChecks, getLiquidityAndMarketCapUsd };
+module.exports = { gatherTokenData, evaluateForUser, getLiquidityAndMarketCapUsd };

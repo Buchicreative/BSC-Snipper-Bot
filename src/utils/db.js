@@ -30,6 +30,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,           -- Telegram user this position belongs to
     token_address TEXT NOT NULL,
     mode TEXT NOT NULL,             -- 'paper' | 'live'
     status TEXT NOT NULL,           -- 'open' | 'closed'
@@ -52,7 +53,24 @@ db.exec(`
     payload TEXT,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS users (
+    chat_id TEXT PRIMARY KEY,
+    telegram_username TEXT,
+    wallet_address TEXT,
+    encrypted_private_key TEXT,
+    created_at INTEGER NOT NULL
+  );
 `);
+
+// Migration for DBs created before chat_id existed on positions (idempotent —
+// SQLite has no "ADD COLUMN IF NOT EXISTS", so this just no-ops via catch on
+// a fresh DB where the column already exists from the CREATE TABLE above).
+try {
+  db.exec('ALTER TABLE positions ADD COLUMN chat_id TEXT');
+} catch {
+  // Column already exists — expected on every run after the first migration.
+}
 
 logger.info('Database ready', { path: config.db.path });
 

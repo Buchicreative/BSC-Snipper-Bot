@@ -1,36 +1,40 @@
 const db = require('./db');
 const priceFeed = require('./priceFeed');
 
-/**
- * Aggregates trade stats from the positions table.
- * spentBnb: total BNB committed across all positions ever opened
- * madeBnb: sum of positive pnl_bnb across closed positions
- * lostBnb: sum of negative pnl_bnb (as a positive number) across closed positions
- */
-function getStats() {
-  const tradeCount = db.prepare(`SELECT COUNT(*) as c FROM positions`).get().c;
+function getStats(chatId) {
+  const cid = String(chatId);
+  const tradeCount = db.prepare(`SELECT COUNT(*) as c FROM positions WHERE chat_id = ?`).get(cid).c;
 
-  const spentRow = db.prepare(`SELECT COALESCE(SUM(entry_amount_bnb), 0) as total FROM positions`).get();
-  const spentBnb = spentRow.total;
+  const spentBnb = db
+    .prepare(`SELECT COALESCE(SUM(entry_amount_bnb), 0) as total FROM positions WHERE chat_id = ?`)
+    .get(cid).total;
 
-  const madeRow = db
-    .prepare(`SELECT COALESCE(SUM(pnl_bnb), 0) as total FROM positions WHERE status = 'closed' AND pnl_bnb > 0`)
-    .get();
-  const madeBnb = madeRow.total;
+  const madeBnb = db
+    .prepare(
+      `SELECT COALESCE(SUM(pnl_bnb), 0) as total FROM positions
+       WHERE chat_id = ? AND status = 'closed' AND pnl_bnb > 0`
+    )
+    .get(cid).total;
 
-  const lostRow = db
-    .prepare(`SELECT COALESCE(SUM(pnl_bnb), 0) as total FROM positions WHERE status = 'closed' AND pnl_bnb < 0`)
-    .get();
-  const lostBnb = Math.abs(lostRow.total);
+  const lostBnb = Math.abs(
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(pnl_bnb), 0) as total FROM positions
+         WHERE chat_id = ? AND status = 'closed' AND pnl_bnb < 0`
+      )
+      .get(cid).total
+  );
 
-  const openCount = db.prepare(`SELECT COUNT(*) as c FROM positions WHERE status = 'open'`).get().c;
+  const openCount = db
+    .prepare(`SELECT COUNT(*) as c FROM positions WHERE chat_id = ? AND status = 'open'`)
+    .get(cid).c;
   const closedCount = tradeCount - openCount;
 
   return { tradeCount, openCount, closedCount, spentBnb, madeBnb, lostBnb };
 }
 
-async function getStatsWithUsd() {
-  const stats = getStats();
+async function getStatsWithUsd(chatId) {
+  const stats = getStats(chatId);
   const bnbUsdPrice = await priceFeed.getBnbUsdPrice().catch(() => null);
   return {
     ...stats,
@@ -41,10 +45,10 @@ async function getStatsWithUsd() {
   };
 }
 
-function clearHistory() {
-  db.prepare(`DELETE FROM positions`).run();
-  db.prepare(`DELETE FROM events`).run();
-  db.prepare(`DELETE FROM tokens`).run();
+function clearHistory(chatId) {
+  const cid = String(chatId);
+  db.prepare(`DELETE FROM positions WHERE chat_id = ?`).run(cid);
+  // tokens/events are shared candidate-discovery data, not per-user — left alone.
 }
 
 module.exports = { getStats, getStatsWithUsd, clearHistory };

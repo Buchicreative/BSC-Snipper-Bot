@@ -2,13 +2,15 @@ const db = require('./db');
 const logger = require('./logger');
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  CREATE TABLE IF NOT EXISTS user_settings (
+    chat_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (chat_id, key)
   );
 `);
 
-// Mirrors the command set from the Solana pumpfun sniper for parity.
+// Every user gets their own independent copy of these, seeded on first use.
 const DEFAULTS = {
   tradeSizeUsd: 20,        // /setsize — $ per trade
   gasReserveUsd: 10,       // /setgasreserve — $ always kept untouched as gas buffer
@@ -24,36 +26,30 @@ const DEFAULTS = {
   slippageBps: 300,        // execution slippage tolerance (basis points)
 };
 
-const insertIfMissing = db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`);
-for (const [key, value] of Object.entries(DEFAULTS)) {
-  insertIfMissing.run(key, String(value));
-}
-
-const getStmt = db.prepare(`SELECT value FROM settings WHERE key = ?`);
+const getStmt = db.prepare('SELECT value FROM user_settings WHERE chat_id = ? AND key = ?');
 const setStmt = db.prepare(
-  `INSERT INTO settings (key, value) VALUES (?, ?)
-   ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  `INSERT INTO user_settings (chat_id, key, value) VALUES (?, ?, ?)
+   ON CONFLICT(chat_id, key) DO UPDATE SET value = excluded.value`
 );
 
-function get(key) {
-  const row = getStmt.get(key);
+function get(chatId, key) {
+  const row = getStmt.get(String(chatId), key);
   if (!row) return DEFAULTS[key];
-  const raw = row.value;
-  const num = Number(raw);
-  return Number.isNaN(num) ? raw : num;
+  const num = Number(row.value);
+  return Number.isNaN(num) ? row.value : num;
 }
 
-function set(key, value) {
+function set(chatId, key, value) {
   if (!(key in DEFAULTS)) {
     throw new Error(`Unknown setting: ${key}`);
   }
-  setStmt.run(key, String(value));
-  logger.info('Setting updated', { key, value });
-  return get(key);
+  setStmt.run(String(chatId), key, String(value));
+  logger.info('User setting updated', { chatId: String(chatId), key, value });
+  return get(chatId, key);
 }
 
-function getAll() {
-  return Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, get(k)]));
+function getAll(chatId) {
+  return Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, get(chatId, k)]));
 }
 
 module.exports = { get, set, getAll, DEFAULTS };

@@ -1,8 +1,40 @@
 # BSC Sniper Bot (four.meme + PancakeSwap graduation)
 
-Standalone Telegram sniping bot for BSC. Separate project from the Solana/BSC
-memebot — same architecture and feature set, rebuilt for this chain's
-launchpad ecosystem, with command parity to the Solana pump.fun sniper.
+Multi-user Telegram sniping bot for BSC. Any Telegram user on the allowlist
+can register their own wallet (generate a new one, or import via private key
+or seed phrase) and trade independently — their own settings, their own
+wallet, their own positions, isolated from every other user on the same
+deployment. Separate project from the Solana/BSC memebot — same architecture
+and feature set, rebuilt for this chain's launchpad ecosystem, with command
+parity to the Solana pump.fun sniper.
+
+## Multi-user model
+
+- **Per-user wallets** — `/generatewallet` creates a new one, or
+  `/importwallet <privateKey or seed phrase>` brings your own. Private keys
+  are encrypted at rest (AES-256-GCM) with a single master key
+  (`WALLET_ENCRYPTION_KEY`) that only the deployment operator holds.
+- **Per-user everything else** — trade size, gas reserve, max positions,
+  liquidity/market cap/holder/tax thresholds, TP/SL, mode (paper/live), pause
+  state, and circuit breaker are all independent per user. One person running
+  aggressive live settings doesn't affect another person running conservative
+  paper settings on the same bot.
+- **Shared candidate discovery** — the expensive part (RPC calls, honeypot.is,
+  Etherscan) runs once per discovered token, not once per user. Each
+  registered user's own thresholds are then checked against that same data,
+  cheaply, in a loop.
+- **Admin allowlist** — only Telegram user IDs listed in
+  `ALLOWED_TELEGRAM_USER_IDS` can register a wallet or trade. Everyone else
+  gets a polite refusal.
+
+**Security model, plainly stated:** this bot is custodial. It needs your raw
+private key to sign transactions automatically, so whoever controls this
+deployment (and its `WALLET_ENCRYPTION_KEY`) can technically access every
+registered user's funds — the same trust model as any automated trading bot,
+custodial exchange wallet, or copy-trading service. Keep only what you're
+willing to risk in a bot-managed wallet, and move profits out to a wallet you
+control directly. `/exportkey confirm` exists specifically so nothing is
+trapped here permanently.
 
 ## What it watches
 
@@ -16,10 +48,15 @@ All position sizing and thresholds are **USD-denominated** (converted to BNB
 at execution time via a live BNB/USD price feed), matching the Solana bot's
 SOL-equivalent USD sizing.
 
-## Telegram commands (full parity with the Solana sniper)
+## Telegram commands
 
 | Command | Does |
 |---|---|
+| `/generatewallet` | create a new wallet for you (shows key once, auto-deletes after 60s) |
+| `/importwallet <privateKey or seed phrase>` | use your own wallet instead |
+| `/wallet` | show your address and BNB balance |
+| `/exportkey confirm` | reveal your private key (auto-deletes after 60s) |
+| `/deletewallet confirm` | remove your stored wallet from this bot |
 | `/setsize <usd>` | $ per trade |
 | `/setgasreserve <usd>` | $ always kept untouched as a gas buffer |
 | `/setmaxpositions <n>` | max simultaneous open positions |
@@ -36,16 +73,16 @@ SOL-equivalent USD sizing.
 | `/positions` | show open positions |
 | `/history` | show recent closed trades |
 | `/clearhistory confirm` | permanently wipe trade history + stats |
-| `/pause` | stop opening new positions |
-| `/resume` | resume trading + reset circuit breaker |
-| `/mode <paper\|live>` | switch trading mode live, no restart needed |
-| `/stop` | close all positions and pause |
-| `/closeall` | close all positions but keep trading (no pause) |
-| `/killswitch confirm` | actually stop the deployment (not just pause) |
+| `/pause` | stop opening new positions for you |
+| `/resume` | resume trading + reset your circuit breaker |
+| `/mode <paper\|live>` | switch YOUR trading mode live, no restart needed |
+| `/stop` | close all your positions and pause |
+| `/closeall` | close all your positions but keep trading (no pause) |
+| `/killswitch confirm` | stop the ENTIRE deployment for every user (not just you) |
 | `/buy <token> <amountBnb>` | manual buy |
 | `/sell <token> <amount>` | manual sell |
-| `/settings` | view all current thresholds at once |
-| `/status` | mode, pause state, position count, all thresholds |
+| `/settings` | view all your current thresholds at once |
+| `/status` | your mode, pause state, position count, all thresholds |
 
 ## Status: paper-trading ready, live not yet recommended
 
@@ -149,16 +186,26 @@ npm run dev
    You'll see a one-line `ExperimentalWarning: SQLite is an experimental
    feature` in the logs on startup — that's expected and harmless.
 4. Add the variables from `.env.example` under Railway's Variables tab.
-   Leave `TRADING_MODE=paper` until the safety checklist above is done —
-   after boot, use `/mode` in Telegram to switch, no redeploy needed.
+   `WALLET_ENCRYPTION_KEY` and `ALLOWED_TELEGRAM_USER_IDS` are required for
+   anyone to register a wallet — generate the encryption key with
+   `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+   and get Telegram IDs from @userinfobot. Trading mode is per-user now
+   (defaults to paper) — each person switches their own via `/mode` in
+   Telegram, no redeploy needed.
 5. Railway will run `node src/index.js` per `railway.json`.
-6. Attach a persistent volume if you want `data/bot.db` (positions, settings,
-   bot state, stats) to survive redeploys (Railway → your service → Settings
-   → Volumes → mount at `/app/data`).
+6. Attach a persistent volume so `data/bot.db` (every user's wallet, settings,
+   positions, and stats) survives redeploys (Railway → your service →
+   Settings → Volumes → mount at `/app/data`). **This one matters more now**
+   — losing this volume means every registered user loses their stored
+   wallet (recoverable only if they saved their own private key/seed phrase
+   when they generated or imported it).
 
 ## Trading modes
 
-- `paper` (default) — simulates buys/sells, logs what would have happened, no
-  real transactions. Use this until the safety-check checklist is complete.
-- `live` — executes real swaps via the wallet in `WALLET_PRIVATE_KEY`. Only
-  switch via `/mode live` once you've tested extensively in paper mode.
+Per-user, not global. Each person controls their own via `/mode <paper|live>`.
+
+- `paper` (default for every new user) — simulates buys/sells, logs what
+  would have happened, no real transactions.
+- `live` — executes real swaps via that user's own registered wallet. Only
+  switches if they've already registered a wallet (`/generatewallet` or
+  `/importwallet`); refuses otherwise with a clear error.
