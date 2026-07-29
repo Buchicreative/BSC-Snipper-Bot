@@ -13,6 +13,7 @@ const { startPancakeGraduationListener } = require('./listeners/pancakeGraduatio
 const { gatherTokenData, evaluateForUser } = require('./filters/safetyChecks');
 const { getTraderForUser } = require('./execution/traderFactory');
 const positionManager = require('./risk/positionManager');
+const { shortAddr } = require('./utils/formatting');
 const { createBot, notifyUser } = require('./telegram/bot');
 
 // Defense in depth: log and keep running rather than crash on something
@@ -62,12 +63,14 @@ async function main() {
       return;
     }
 
+    const label = `${shortAddr(candidate.address)} (${candidate.source === 'four_meme' ? 'fourmeme' : 'pancake'})`;
+
     if (positionManager.isAtMaxPositions(chatId)) {
       const maxPositions = userSettings.get(chatId, 'maxPositions');
       notifyUser(
         bot,
         chatId,
-        `⚠️ Did not open position on ${candidate.address} — at max positions (${maxPositions}). Raise the limit with /setmaxpositions.`
+        `⚠️ Did not open position on ${label}\nAt max positions (${maxPositions}). Raise the limit with /setmaxpositions.`
       );
       return;
     }
@@ -93,23 +96,39 @@ async function main() {
       const balanceBnb = await trader.getWalletBalanceBnb();
       const gasReserveUsd = userSettings.get(chatId, 'gasReserveUsd');
       const gasReserveBnb = await priceFeed.usdToBnb(gasReserveUsd);
-      if (balanceBnb - tradeSizeBnb < gasReserveBnb) {
+      const neededBnb = tradeSizeBnb + gasReserveBnb;
+      if (balanceBnb < neededBnb) {
         notifyUser(
           bot,
           chatId,
-          `⚠️ Did not open position on ${candidate.address} — buying would dip below your $${gasReserveUsd} gas reserve.`
+          `⚠️ Did not open position on ${label}\n` +
+            `Skipped to protect gas reserve: wallet has ${balanceBnb.toFixed(5)} BNB, this trade + $${gasReserveUsd} reserve needs ${neededBnb.toFixed(5)} BNB.`
         );
         return;
       }
     }
 
+    notifyUser(
+      bot,
+      chatId,
+      `✅ New token passed safety checks (${candidate.source === 'four_meme' ? 'fourmeme' : 'pancake'}):\n${candidate.address}\n\nOpening position...`
+    );
+
     try {
-      await positionManager.openPosition(chatId, trader, candidate.address, tradeSizeBnb);
+      const position = await positionManager.openPosition(chatId, trader, candidate.address, tradeSizeBnb, {
+        tokenSymbol: candidate.symbol || null,
+        entryAmountUsd: tradeSizeUsd,
+        entryPriceUsd: tokenData.tokenPriceUsd || null,
+        openedMarketCapUsd: tokenData.marketCapUsd || null,
+      });
       userBotState.recordSuccess(chatId);
+
+      const priceStr = tokenData.tokenPriceUsd ? ` @ $${tokenData.tokenPriceUsd.toPrecision(4)}` : '';
+      const mcStr = tokenData.marketCapUsd ? ` (MC: $${Math.round(tokenData.marketCapUsd).toLocaleString()})` : '';
       notifyUser(
         bot,
         chatId,
-        `✅ Opened position on ${candidate.address} (${candidate.source}) — $${tradeSizeUsd} / ${tradeSizeBnb.toFixed(5)} BNB [${trader.mode.toUpperCase()}]`
+        `🟢 Opened ${trader.mode.toUpperCase()} position: ${label} - $${tradeSizeUsd}${priceStr}${mcStr}`
       );
     } catch (err) {
       logger.error('Auto-buy failed', { chatId, address: candidate.address, error: err.message });
@@ -117,7 +136,7 @@ async function main() {
       notifyUser(
         bot,
         chatId,
-        `❌ Buy failed on ${candidate.address}: ${err.message}\nConsecutive failures: ${failures}/${userBotState.CIRCUIT_BREAKER_THRESHOLD}`
+        `❌ Buy failed on ${label}: ${err.message}\nConsecutive failures: ${failures}/${userBotState.CIRCUIT_BREAKER_THRESHOLD}`
       );
     }
   }

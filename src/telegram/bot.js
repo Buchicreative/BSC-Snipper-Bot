@@ -10,6 +10,8 @@ const priceFeed = require('../utils/priceFeed');
 const logger = require('../utils/logger');
 const { getTraderForUser } = require('../execution/traderFactory');
 const positionManager = require('../risk/positionManager');
+const { shortAddr, pnlEmoji, closeReasonLabel, formatUsd } = require('../utils/formatting');
+const { getLiquidityAndMarketCapUsd } = require('../filters/safetyChecks');
 
 const SET_COMMANDS = {
   setsize: { key: 'tradeSizeUsd', label: '$ per trade' },
@@ -289,15 +291,42 @@ function createBot({ provider }) {
     }
   });
 
-  bot.command('positions', (ctx) => {
+  bot.command('positions', async (ctx) => {
     const rows = positionManager.getOpenPositions(ctx.from.id);
     if (rows.length === 0) {
       ctx.reply('No open positions.');
       return;
     }
-    const lines = rows.map(
-      (p) => `${p.token_address}\n  entry: ${p.entry_amount_bnb} BNB | tx: ${p.entry_tx_hash}`
+
+    const lines = await Promise.all(
+      rows.map(async (p) => {
+        let currentMc = null;
+        try {
+          const data = await getLiquidityAndMarketCapUsd(p.token_address, provider);
+          currentMc = data.marketCapUsd;
+        } catch {
+          // Leave as null — shown as n/a below.
+        }
+
+        let pnlPct = null;
+        let pnlUsd = null;
+        if (p.opened_market_cap_usd && currentMc) {
+          pnlPct = ((currentMc - p.opened_market_cap_usd) / p.opened_market_cap_usd) * 100;
+          if (p.entry_amount_usd) pnlUsd = p.entry_amount_usd * (pnlPct / 100);
+        }
+
+        const emoji = pnlPct !== null ? pnlEmoji(pnlPct) : '⚪';
+        const label = `${shortAddr(p.token_address)} (${p.token_symbol || 'token'})`;
+        const pnlLine =
+          pnlPct !== null
+            ? `PnL ${formatUsd(pnlUsd)} (${pnlPct.toFixed(1)}%)`
+            : 'PnL n/a';
+        const mcLine = `Opened MC: ${formatUsd(p.opened_market_cap_usd)} | Current MC: ${currentMc ? formatUsd(currentMc) : 'n/a'}`;
+
+        return `${emoji} ${label} - ${p.mode} - size ${formatUsd(p.entry_amount_usd)}\n${pnlLine} | ${mcLine}`;
+      })
     );
+
     ctx.reply(lines.join('\n\n'));
   });
 
@@ -311,14 +340,34 @@ function createBot({ provider }) {
       ctx.reply('No closed trades yet.');
       return;
     }
-    const lines = rows.map((p) => `${p.token_address} | pnl: ${p.pnl_pct ?? 'n/a'}%`);
-    ctx.reply(lines.join('\n'));
+    const lines = rows.map((p) => {
+      const emoji = p.pnl_pct !== null && p.pnl_pct !== undefined ? pnlEmoji(p.pnl_pct) : '⚪';
+      const label = `${shortAddr(p.token_address)} (${p.token_symbol || 'token'})`;
+      const pnlLine =
+        p.pnl_pct !== null && p.pnl_pct !== undefined
+          ? `PnL ${formatUsd(p.pnl_usd)} (${p.pnl_pct.toFixed(1)}%)`
+          : 'PnL n/a';
+      return (
+        `${emoji} ${closeReasonLabel(p.close_reason || 'manual')}\n` +
+        `${label}\n` +
+        `${pnlLine}\n` +
+        `Opened Market Cap: ${formatUsd(p.opened_market_cap_usd)}\n` +
+        `Closed Market Cap: ${formatUsd(p.closed_market_cap_usd)}`
+      );
+    });
+    ctx.reply(lines.join('\n\n'));
   });
 
   bot.command('clearhistory', (ctx) => {
     const parts = ctx.message.text.split(' ').filter(Boolean);
     if (parts[1] !== 'confirm') {
-      ctx.reply('This permanently wipes your trade history and stats.\nRun /clearhistory confirm to proceed.');
+      const closedCount = db
+        .prepare(`SELECT COUNT(*) as c FROM positions WHERE chat_id = ? AND status = 'closed'`)
+        .get(String(ctx.from.id)).c;
+      ctx.reply(
+        `⚠️ This permanently deletes all ${closedCount} closed trade record(s) and resets your win/loss stats ` +
+          `to zero. Open positions are not affected. This cannot be undone. Reply "/clearhistory confirm" to proceed.`
+      );
       return;
     }
     stats.clearHistory(ctx.from.id);

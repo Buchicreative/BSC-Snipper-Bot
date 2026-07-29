@@ -56,7 +56,7 @@ async function getPairReserves(tokenAddress, provider) {
 async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
   const reserves = await getPairReserves(tokenAddress, provider);
   if (!reserves) {
-    return { liquidityUsd: 0, marketCapUsd: 0, pairAddress: null };
+    return { liquidityUsd: 0, marketCapUsd: 0, tokenPriceUsd: 0, pairAddress: null };
   }
 
   const bnbUsdPrice = await priceFeed.getBnbUsdPrice();
@@ -69,12 +69,14 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
   const totalSupplyFormatted = parseFloat(ethers.formatUnits(totalSupplyRaw, decimals));
 
   let marketCapUsd = 0;
+  let tokenPriceUsd = 0;
   if (tokenReserveFormatted > 0) {
     const tokenPriceBnb = reserves.wbnbReserveBnb / tokenReserveFormatted;
-    marketCapUsd = tokenPriceBnb * totalSupplyFormatted * bnbUsdPrice;
+    tokenPriceUsd = tokenPriceBnb * bnbUsdPrice;
+    marketCapUsd = tokenPriceUsd * totalSupplyFormatted;
   }
 
-  return { liquidityUsd, marketCapUsd, pairAddress: reserves.pairAddress };
+  return { liquidityUsd, marketCapUsd, tokenPriceUsd, pairAddress: reserves.pairAddress };
 }
 
 /**
@@ -98,9 +100,10 @@ async function gatherTokenData(tokenAddress, provider) {
 
   // Liquidity + market cap (also resolves the pair address, reused below)
   try {
-    const { liquidityUsd, marketCapUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
+    const { liquidityUsd, marketCapUsd, tokenPriceUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
     data.liquidityUsd = liquidityUsd;
     data.marketCapUsd = marketCapUsd;
+    data.tokenPriceUsd = tokenPriceUsd;
     data.pairAddress = pairAddress;
   } catch (err) {
     logger.warn('Liquidity/market cap read failed', { tokenAddress, error: err.message });

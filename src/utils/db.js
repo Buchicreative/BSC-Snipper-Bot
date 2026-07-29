@@ -72,6 +72,24 @@ try {
   // Column already exists — expected on every run after the first migration.
 }
 
+// Same idempotent-migration pattern for the market-cap/PnL display columns.
+const extraColumns = [
+  'entry_amount_usd REAL',
+  'entry_price_usd REAL',
+  'opened_market_cap_usd REAL',
+  'closed_market_cap_usd REAL',
+  'pnl_usd REAL',
+  'token_symbol TEXT',
+  'close_reason TEXT',
+];
+for (const col of extraColumns) {
+  try {
+    db.exec(`ALTER TABLE positions ADD COLUMN ${col}`);
+  } catch {
+    // Column already exists.
+  }
+}
+
 logger.info('Database ready', { path: config.db.path });
 
 module.exports = db;
