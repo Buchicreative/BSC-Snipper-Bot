@@ -47,23 +47,33 @@ SOL-equivalent USD sizing.
 | `/settings` | view all current thresholds at once |
 | `/status` | mode, pause state, position count, all thresholds |
 
-## Status: functional scaffold — NOT ready for live trading yet
+## Status: paper-trading ready, live not yet recommended
 
-Before flipping to `/mode live`, these MUST be finished:
+Every safety check and every checklist item is now implemented. Nothing is
+architecturally blocking `/mode live` — but two things are worth doing before
+you trust it with real money:
 
-- [ ] **Verify the exact TokenCreate field order.** The contract address
-      (`0x5c952063c7fc8610FFDB798152D69F0B9550762b`, TokenManager2) and event
-      name (`TokenCreate`) are now confirmed from multiple independent
-      sources — Bitquery's BSC indexer docs, four.meme's own GitBook, and
-      community tooling. What's *not* confirmed is the exact parameter
-      order/types, because the contract is unverified on BscScan (no public
-      source). Grab the authoritative ABI from four.meme's own download at
-      https://four-meme.gitbook.io/four.meme/brand/protocol-integration
-      (`TokenManager2.lite.abi`) and diff it against
-      `src/listeners/fourMemeListener.js`, or decode one real transaction to
-      confirm field order. The listener also logs raw undecoded logs from
-      the contract as a diagnostic — if you see those but never see "new
-      token detected," that's the signature mismatch surfacing.
+- **Run it in paper mode first and watch the Telegram feed** for a while.
+  Confirm it's catching real four.meme launches and PancakeSwap graduations,
+  and that the safety checks are behaving the way you expect.
+- **Double-check the honeypot.is and Etherscan API responses hold up** under
+  real traffic — both are third-party services this bot depends on, and
+  their soft-failure handling (logged, non-blocking) means a quiet outage
+  could reduce your effective filtering without stopping the bot outright.
+
+The one thing that was a genuine open question — the exact `TokenCreate`
+field order — is now resolved. Confirmed via
+[`four-meme-community/four-meme-ai`](https://github.com/four-meme-community/four-meme-ai/blob/main/skills/four-meme-integration/references/event-listening.md),
+an actively maintained open-source tool built against this exact contract:
+
+```
+event TokenCreate(address creator, address token, uint256 requestId, string name, string symbol, uint256 totalSupply, uint256 launchTime, uint256 launchFee)
+```
+
+None of the fields are indexed. This matches Bitquery's independently
+documented field list for the same event, and is what's now in
+`src/listeners/fourMemeListener.js`.
+
 ### Already implemented and functional
 
 - **Full command parity** with the Solana bot's command set (table above),

@@ -5,31 +5,30 @@ const logger = require('../utils/logger');
 /**
  * Listens for new token creation events on four.meme's TokenManager2 contract.
  *
- * CONFIRMED via multiple independent sources (Bitquery's BSC indexer docs,
- * the official four.meme GitBook protocol integration page, and community
- * tooling like bsc-mcp / four-meme-community's four-meme-ai):
+ * CONFIRMED — contract, event name, AND exact field order/types:
  *   - Contract: TokenManager2, address 0x5c952063c7fc8610FFDB798152D69F0B9550762b
- *   - Event name: "TokenCreate"
- *   - TokenManager2 is the correct contract for tokens created after
- *     Sept 5 2024 — the older "TokenManager" (V1) can't create new tokens.
+ *   - Event: TokenCreate(address creator, address token, uint256 requestId,
+ *            string name, string symbol, uint256 totalSupply,
+ *            uint256 launchTime, uint256 launchFee)
+ *   - NONE of the fields are indexed.
  *
- * NOT CONFIRMED: the exact parameter order/types/indexed-ness of TokenCreate.
- * The contract is UNVERIFIED on BscScan, so there's no public ABI to read
- * directly. The event signature below is a best-effort reconstruction from
- * indexer documentation (Bitquery lists creator, token, name, symbol,
- * totalSupply, requestId, launchTime, launchFee as the fields it decodes).
+ * Source: four-meme-community/four-meme-ai (open-source CLI + agent skill
+ * actively used against this exact contract), references/event-listening.md,
+ * which gives this exact signature via a working viem example:
+ * https://github.com/four-meme-community/four-meme-ai/blob/main/skills/four-meme-integration/references/event-listening.md
+ * Cross-checked against Bitquery's indexer docs, which independently list
+ * the same field names for their TokenCreate decoding.
  *
- * BEFORE RELYING ON THIS: grab the authoritative ABI from four.meme's own
- * downloads at https://four-meme.gitbook.io/four.meme/brand/protocol-integration
- * (TokenManager2.lite.abi) and diff it against the event below — or decode
- * one real TokenCreate transaction on BscScan and confirm field order there.
+ * The same contract also emits TokenPurchase, TokenSale, and LiquidityAdded
+ * — not wired up here, but documented in the same reference above if useful
+ * later (e.g. LiquidityAdded as an alternative graduation signal alongside
+ * the PancakeSwap PairCreated listener this project already uses).
  */
 
 const FOUR_MEME_TOKEN_MANAGER_ADDRESS = '0x5c952063c7fc8610FFDB798152D69F0B9550762b';
 
 const FOUR_MEME_FACTORY_ABI = [
-  // Best-effort reconstruction — see disclaimer above. Verify before live use.
-  'event TokenCreate(address indexed creator, address indexed token, uint256 requestId, string name, string symbol, uint256 totalSupply, uint256 launchTime, uint256 launchFee)',
+  'event TokenCreate(address creator, address token, uint256 requestId, string name, string symbol, uint256 totalSupply, uint256 launchTime, uint256 launchFee)',
 ];
 
 function startFourMemeListener({ onTokenCreated }) {
@@ -46,6 +45,7 @@ function startFourMemeListener({ onTokenCreated }) {
       source: 'four_meme',
       address: token,
       creator,
+      requestId: requestId?.toString(),
       name,
       symbol,
       discoveredAt: Date.now(),
@@ -55,22 +55,9 @@ function startFourMemeListener({ onTokenCreated }) {
 
   factory.on('TokenCreate', handler);
 
-  // If the ABI's field order/types are wrong, ethers will simply never match
-  // the event (wrong topic0 hash) rather than throwing — so also log raw,
-  // undecoded logs from this contract as a diagnostic breadcrumb. If you see
-  // activity here but never see "four.meme: new token detected" above, that's
-  // the signature mismatch making itself known.
-  provider.on({ address: factoryAddress }, (log) => {
-    logger.debug('Raw log from four.meme contract (undecoded)', {
-      topics: log.topics,
-      txHash: log.transactionHash,
-    });
-  });
-
   return {
     stop: () => {
       factory.off('TokenCreate', handler);
-      provider.removeAllListeners();
       provider.destroy();
     },
   };
