@@ -16,6 +16,8 @@ const SET_COMMANDS = {
   setmaxmarketcap: { key: 'maxMarketCapUsd', label: 'skip tokens valued above this (USD)' },
   setminmarketcap: { key: 'minMarketCapUsd', label: 'skip tokens valued below this (USD)' },
   setmaxholderpercent: { key: 'maxHolderPercent', label: 'max % one wallet can hold' },
+  setmaxbuytax: { key: 'maxBuyTaxPct', label: 'reject tokens with buy tax above this %' },
+  setmaxselltax: { key: 'maxSellTaxPct', label: 'reject tokens with sell tax above this %' },
   settakeprofit: { key: 'takeProfitPct', label: 'gain % to auto-sell at' },
   setstoploss: { key: 'stopLossPct', label: 'loss % to auto-sell at' },
 };
@@ -29,6 +31,8 @@ function formatSettings(s) {
     `Max market cap: ${s.maxMarketCapUsd > 0 ? '$' + s.maxMarketCapUsd : 'no cap'}\n` +
     `Min market cap: ${s.minMarketCapUsd > 0 ? '$' + s.minMarketCapUsd : 'no floor'}\n` +
     `Max holder %: ${s.maxHolderPercent}%\n` +
+    `Max buy tax: ${s.maxBuyTaxPct}%\n` +
+    `Max sell tax: ${s.maxSellTaxPct}%\n` +
     `Take profit: +${s.takeProfitPct}%\n` +
     `Stop loss: -${s.stopLossPct}%`
   );
@@ -49,6 +53,8 @@ function createBot({ positionManager }) {
         `/setmaxmarketcap <usd> - skip tokens valued above this\n` +
         `/setminmarketcap <usd> - skip tokens valued below this\n` +
         `/setmaxholderpercent <percent> - max % one wallet can hold\n` +
+        `/setmaxbuytax <percent> - reject tokens with buy tax above this\n` +
+        `/setmaxselltax <percent> - reject tokens with sell tax above this\n` +
         `/settakeprofit <percent> - gain % to auto-sell at\n` +
         `/setstoploss <percent> - loss % to auto-sell at\n` +
         `/stats - balance, trade count, spent/made/lost\n` +

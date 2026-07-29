@@ -2,6 +2,7 @@ const { ethers } = require('ethers');
 const config = require('../config');
 const settings = require('../utils/settings');
 const priceFeed = require('../utils/priceFeed');
+const honeypotChecker = require('../utils/honeypotChecker');
 const logger = require('../utils/logger');
 
 const ERC20_ABI = [
@@ -140,11 +141,45 @@ async function runSafetyChecks(tokenAddress, provider) {
     reasons.push('liquidity_read_failed');
   }
 
-  // 4. Honeypot simulation — simulate a buy+sell via eth_call to catch
-  // contracts that block selling. Requires a router simulation harness;
-  // stub for now, must be implemented before live trading.
-  report.honeypotSimulated = false;
-  reasons.push('honeypot_check_not_implemented');
+  // 4. Honeypot + buy/sell tax check — actually simulates a buy+sell via
+  // honeypot.is's public API, which catches contracts that let you buy but
+  // block or heavily tax selling. This is a real simulation, not a static
+  // heuristic, though it depends on a third-party service being up.
+  try {
+    const hp = await honeypotChecker.checkHoneypot(tokenAddress);
+    report.honeypotChecked = hp.checked;
+
+    if (hp.checked) {
+      report.isHoneypot = hp.isHoneypot;
+      report.honeypotReason = hp.honeypotReason;
+      report.buyTaxPct = hp.buyTaxPct;
+      report.sellTaxPct = hp.sellTaxPct;
+      report.risk = hp.risk;
+      report.riskLevel = hp.riskLevel;
+
+      if (hp.isHoneypot === true) {
+        reasons.push('honeypot_detected');
+      }
+
+      const maxBuyTax = settings.get('maxBuyTaxPct');
+      const maxSellTax = settings.get('maxSellTaxPct');
+      if (hp.buyTaxPct !== null && hp.buyTaxPct > maxBuyTax) {
+        reasons.push('buy_tax_above_maximum');
+      }
+      if (hp.sellTaxPct !== null && hp.sellTaxPct > maxSellTax) {
+        reasons.push('sell_tax_above_maximum');
+      }
+    } else {
+      // Couldn't reach honeypot.is (rate limit, outage, or a token too new
+      // for them to have indexed a pair yet). Treated as a soft failure —
+      // logged and visible in the report, but doesn't block the buy on its
+      // own, since an API outage shouldn't silently halt all trading.
+      reasons.push('honeypot_check_unavailable');
+    }
+  } catch (err) {
+    logger.warn('Honeypot check errored', { tokenAddress, error: err.message });
+    reasons.push('honeypot_check_unavailable');
+  }
 
   // 5. Liquidity lock check — is LP locked (e.g. via a known locker contract)?
   // Requires checking LP token holder against known lockers (Unicrypt, PinkLock, etc).
@@ -161,6 +196,9 @@ async function runSafetyChecks(tokenAddress, provider) {
       'liquidity_below_minimum',
       'market_cap_above_maximum',
       'market_cap_below_minimum',
+      'honeypot_detected',
+      'buy_tax_above_maximum',
+      'sell_tax_above_maximum',
     ].includes(r)
   );
 

@@ -17,6 +17,8 @@ const DEFAULTS = {
   maxMarketCapUsd: 0,      // /setmaxmarketcap — skip tokens valued above this (0 = no cap)
   minMarketCapUsd: 0,      // /setminmarketcap — skip tokens valued below this (0 = no floor)
   maxHolderPercent: 10,    // /setmaxholderpercent — max % one wallet can hold
+  maxBuyTaxPct: 10,        // /setmaxbuytax — reject tokens with buy tax above this
+  maxSellTaxPct: 10,       // /setmaxselltax — reject tokens with sell tax above this
   takeProfitPct: 100,      // /settakeprofit — gain % to auto-sell at
   stopLossPct: 30,         // /setstoploss — loss % to auto-sell at
   slippageBps: 300,        // execution slippage tolerance (basis points)

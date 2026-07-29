@@ -27,6 +27,8 @@ SOL-equivalent USD sizing.
 | `/setmaxmarketcap <usd>` | skip tokens valued above this (0 = no cap) |
 | `/setminmarketcap <usd>` | skip tokens valued below this (0 = no floor) |
 | `/setmaxholderpercent <percent>` | max % one wallet can hold |
+| `/setmaxbuytax <percent>` | reject tokens with simulated buy tax above this |
+| `/setmaxselltax <percent>` | reject tokens with simulated sell tax above this |
 | `/settakeprofit <percent>` | gain % to auto-sell at |
 | `/setstoploss <percent>` | loss % to auto-sell at |
 | `/stats` | balance, trade count, spent/made/lost |
@@ -62,10 +64,6 @@ Before flipping to `/mode live`, these MUST be finished:
       confirm field order. The listener also logs raw undecoded logs from
       the contract as a diagnostic — if you see those but never see "new
       token detected," that's the signature mismatch surfacing.
-- [ ] **Honeypot simulation.** `src/filters/safetyChecks.js` flags this as
-      not-implemented. Needs an actual buy+sell simulation (e.g. via `eth_call`
-      against the router, or a service like honeypot.is's API) before any live
-      buy should be trusted.
 - [ ] **Liquidity lock check.** Check LP token holder against known locker
       contracts (Unicrypt, PinkLock, Mudra, etc).
 - [ ] **Holder concentration check.** `/setmaxholderpercent` is wired up and
@@ -77,6 +75,13 @@ Before flipping to `/mode live`, these MUST be finished:
 - **Full command parity** with the Solana bot's command set (table above),
   all persisted in SQLite and adjustable live via Telegram — no restart needed
   for any of them, including `/mode`.
+- **Honeypot + tax detection** — `src/utils/honeypotChecker.js` calls
+  honeypot.is's public API, which actually simulates a buy+sell of the token
+  (not a static heuristic) to catch contracts that let you buy but block or
+  heavily tax selling. `/setmaxbuytax` / `/setmaxselltax` gate on the real
+  simulated tax percentages. If the API is unreachable, it's logged as a soft
+  failure rather than silently blocking all trading — worth knowing if you
+  see a run of skipped tokens with no other explanation.
 - **Auto-buy is live by default in PAPER mode** (safe — no real funds), same
   as the reference bot: it evaluates every candidate against liquidity, market
   cap, max positions, and (in live mode only) gas reserve, then opens a
