@@ -126,11 +126,41 @@ async function main() {
   const fourMeme = startFourMemeListener({ onTokenCreated: handleCandidateToken });
   const graduation = startPancakeGraduationListener({ onPairCreated: handleCandidateToken });
 
-  bot.launch();
-  logger.info('Telegram bot launched');
+  await launchBotWithRetry(bot);
 
   process.once('SIGINT', () => shutdown({ bot, fourMeme, graduation }));
   process.once('SIGTERM', () => shutdown({ bot, fourMeme, graduation }));
+}
+
+/**
+ * Launches the Telegram bot's long-polling loop, retrying with backoff on
+ * failure. This specifically covers the 409 Conflict Telegram returns when
+ * another poller for the same bot token is still active — which reliably
+ * happens for a few seconds during a Railway redeploy, when the old
+ * container hasn't fully exited before the new one starts polling. Without
+ * a retry here, that single transient 409 kills the polling loop
+ * permanently: the bot process keeps running (looks "Active" in Railway),
+ * but silently stops responding to any Telegram messages from then on.
+ */
+async function launchBotWithRetry(bot, attempt = 1) {
+  const maxDelayMs = 30000;
+  try {
+    // Clears any stale webhook/session state before polling starts —
+    // harmless no-op for a bot that's never used a webhook, but cheap
+    // insurance against leftover state from a previous run.
+    await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+    await bot.launch();
+    logger.info('Telegram bot launched');
+  } catch (err) {
+    const delayMs = Math.min(2000 * attempt, maxDelayMs);
+    logger.error('Telegram bot launch failed, retrying', {
+      attempt,
+      delayMs,
+      error: err.message,
+    });
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return launchBotWithRetry(bot, attempt + 1);
+  }
 }
 
 function shutdown({ bot, fourMeme, graduation }) {
