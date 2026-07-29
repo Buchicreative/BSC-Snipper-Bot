@@ -91,6 +91,11 @@ Before flipping to `/mode live`, these MUST be finished:
   `ETHERSCAN_API_KEY` in `.env`** (free tier from etherscan.io/apis); without
   one, this check is skipped as a soft failure rather than blocking all
   trading.
+- **Contract verification** — `src/utils/contractVerification.js` checks
+  whether the token's source is verified on BscScan via the same Etherscan
+  unified API / key as the holder check. Informational only, not a hard
+  block — plenty of legitimate tokens are unverified in their first few
+  minutes after launch, so this is a signal to weigh, not a filter.
 - **Auto-buy is live by default in PAPER mode** (safe — no real funds), same
   as the reference bot: it evaluates every candidate against liquidity, market
   cap, max positions, and (in live mode only) gas reserve, then opens a

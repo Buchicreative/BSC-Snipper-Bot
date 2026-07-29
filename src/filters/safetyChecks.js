@@ -5,6 +5,7 @@ const priceFeed = require('../utils/priceFeed');
 const honeypotChecker = require('../utils/honeypotChecker');
 const liquidityLock = require('../utils/liquidityLock');
 const holderConcentration = require('../utils/holderConcentration');
+const contractVerification = require('../utils/contractVerification');
 const logger = require('../utils/logger');
 
 const ERC20_ABI = [
@@ -229,9 +230,26 @@ async function runSafetyChecks(tokenAddress, provider) {
     reasons.push('liquidity_lock_unknown');
   }
 
-  // 6. Contract verification — is source verified on BscScan?
-  // Requires a BscScan API call; stub for now.
-  report.sourceVerified = null;
+  // 6. Contract verification — is source verified on BscScan? Informational
+  // only (not a critical failure) — plenty of legitimate brand-new tokens
+  // are unverified in their first few minutes after launch. Requires
+  // ETHERSCAN_API_KEY (same key as the holder concentration check).
+  try {
+    const verifyResult = await contractVerification.checkSourceVerified(tokenAddress);
+    if (verifyResult.checked) {
+      report.sourceVerified = verifyResult.sourceVerified;
+      report.isProxy = verifyResult.isProxy;
+      if (!verifyResult.sourceVerified) {
+        reasons.push('source_not_verified');
+      }
+    } else {
+      report.sourceVerified = null;
+      report.contractVerificationCheckSkipped = verifyResult.reason;
+    }
+  } catch (err) {
+    logger.warn('Contract verification check errored', { tokenAddress, error: err.message });
+    report.sourceVerified = null;
+  }
 
   const criticalFailures = reasons.filter((r) =>
     [
