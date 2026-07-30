@@ -39,9 +39,9 @@ async function openPosition(chatId, trader, tokenAddress, amountBnb, opts = {}) 
     .prepare(
       `INSERT INTO positions
         (chat_id, token_address, mode, status, entry_amount_bnb, entry_amount_usd,
-         entry_price_usd, opened_market_cap_usd, token_symbol, entry_tx_hash,
+         entry_price_usd, opened_market_cap_usd, token_symbol, source, entry_tx_hash,
          take_profit_pct, stop_loss_pct, opened_at)
-       VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       String(chatId),
@@ -52,6 +52,7 @@ async function openPosition(chatId, trader, tokenAddress, amountBnb, opts = {}) 
       opts.entryPriceUsd ?? null,
       opts.openedMarketCapUsd ?? null,
       opts.tokenSymbol ?? null,
+      opts.source ?? null,
       result.txHash,
       opts.takeProfitPct ?? userSettings.get(chatId, 'takeProfitPct'),
       opts.stopLossPct ?? userSettings.get(chatId, 'stopLossPct'),

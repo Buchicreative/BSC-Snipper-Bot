@@ -10,7 +10,7 @@ const priceFeed = require('../utils/priceFeed');
 const logger = require('../utils/logger');
 const { getTraderForUser } = require('../execution/traderFactory');
 const positionManager = require('../risk/positionManager');
-const { shortAddr, pnlEmoji, closeReasonLabel, formatUsd } = require('../utils/formatting');
+const { shortAddr, pnlEmoji, closeReasonLabel, formatUsd, formatMc } = require('../utils/formatting');
 const { getLiquidityAndMarketCapUsd } = require('../filters/safetyChecks');
 
 const SET_COMMANDS = {
@@ -264,12 +264,27 @@ function createBot({ provider }) {
 
   bot.command('stats', async (ctx) => {
     try {
-      const s = await stats.getStatsWithUsd(ctx.from.id);
+      const s = stats.getStats(ctx.from.id);
+
+      let balanceLine = 'Balance: no wallet registered';
+      if (userWallets.hasWallet(ctx.from.id)) {
+        const trader = getTraderForUser(ctx.from.id, provider);
+        const balanceBnb = await trader.getWalletBalanceBnb();
+        const bnbUsdPrice = await priceFeed.getBnbUsdPrice().catch(() => null);
+        const usdStr = bnbUsdPrice ? ` (~$${(balanceBnb * bnbUsdPrice).toFixed(2)})` : '';
+        balanceLine = `Balance: ${balanceBnb.toFixed(5)} BNB${usdStr}`;
+      }
+
+      const netAbs = Math.abs(s.netUsd);
+      const netLine = s.netUsd >= 0 ? `+$${netAbs.toFixed(2)}` : `-$${netAbs.toFixed(2)}`;
       ctx.reply(
-        `Trades: ${s.tradeCount} (${s.openCount} open, ${s.closedCount} closed)\n` +
-          `Spent: ${s.spentBnb.toFixed(4)} BNB${s.spentUsd !== null ? ` (~$${s.spentUsd.toFixed(2)})` : ''}\n` +
-          `Made: ${s.madeBnb.toFixed(4)} BNB${s.madeUsd !== null ? ` (~$${s.madeUsd.toFixed(2)})` : ''}\n` +
-          `Lost: ${s.lostBnb.toFixed(4)} BNB${s.lostUsd !== null ? ` (~$${s.lostUsd.toFixed(2)})` : ''}`
+        `${balanceLine}\n\n` +
+          `Trades closed: ${s.closedCount} (${s.wins}W / ${s.losses}L)\n` +
+          `Open positions: ${s.openCount}\n\n` +
+          `Total spent: ${formatUsd(s.spentUsd)}\n` +
+          `Total made (winning trades): ${formatUsd(s.madeUsd)}\n` +
+          `Total lost (losing trades): ${formatUsd(s.lostUsd)}\n` +
+          `Net P&L: ${netLine}`
       );
     } catch (err) {
       ctx.reply(`Failed to load stats: ${err.message}`);
@@ -317,18 +332,16 @@ function createBot({ provider }) {
         }
 
         const emoji = pnlPct !== null ? pnlEmoji(pnlPct) : '⚪';
-        const label = `${shortAddr(p.token_address)} (${p.token_symbol || 'token'})`;
-        const pnlLine =
-          pnlPct !== null
-            ? `PnL ${formatUsd(pnlUsd)} (${pnlPct.toFixed(1)}%)`
-            : 'PnL n/a';
-        const mcLine = `Opened MC: ${formatUsd(p.opened_market_cap_usd)} | Current MC: ${currentMc ? formatUsd(currentMc) : 'n/a'}`;
+        const label = `${shortAddr(p.token_address)} (${p.source || 'token'})`;
+        const pnlLine = pnlPct !== null ? `PnL: ${formatUsd(pnlUsd)} (${pnlPct.toFixed(1)}%)` : 'PnL: n/a';
+        const mcLine = `Opened MC: ${formatMc(p.opened_market_cap_usd)} | Current MC: ${formatMc(currentMc)}`;
 
         return `${emoji} ${label} - ${p.mode} - size ${formatUsd(p.entry_amount_usd)}\n${pnlLine} | ${mcLine}`;
       })
     );
 
-    ctx.reply(lines.join('\n\n'));
+    const maxPositions = userSettings.get(ctx.from.id, 'maxPositions');
+    ctx.reply(`${lines.join('\n\n')}\n\n${rows.length}/${maxPositions} positions open`);
   });
 
   bot.command('history', (ctx) => {
@@ -343,7 +356,7 @@ function createBot({ provider }) {
     }
     const lines = rows.map((p) => {
       const emoji = p.pnl_pct !== null && p.pnl_pct !== undefined ? pnlEmoji(p.pnl_pct) : '⚪';
-      const label = `${shortAddr(p.token_address)} (${p.token_symbol || 'token'})`;
+      const label = `${shortAddr(p.token_address)} (${p.source || 'token'})`;
       const pnlLine =
         p.pnl_pct !== null && p.pnl_pct !== undefined
           ? `PnL ${formatUsd(p.pnl_usd)} (${p.pnl_pct.toFixed(1)}%)`
@@ -352,11 +365,22 @@ function createBot({ provider }) {
         `${emoji} ${closeReasonLabel(p.close_reason || 'manual')}\n` +
         `${label}\n` +
         `${pnlLine}\n` +
-        `Opened Market Cap: ${formatUsd(p.opened_market_cap_usd)}\n` +
-        `Closed Market Cap: ${formatUsd(p.closed_market_cap_usd)}`
+        `Opened Market Cap: ${formatMc(p.opened_market_cap_usd)}\n` +
+        `Closed Market Cap: ${formatMc(p.closed_market_cap_usd)}`
       );
     });
-    ctx.reply(lines.join('\n\n'));
+
+    const totals = db
+      .prepare(
+        `SELECT
+           COUNT(*) as total,
+           SUM(CASE WHEN pnl_usd >= 0 THEN 1 ELSE 0 END) as wins,
+           SUM(CASE WHEN pnl_usd < 0 THEN 1 ELSE 0 END) as losses
+         FROM positions WHERE chat_id = ? AND status = 'closed'`
+      )
+      .get(String(ctx.from.id));
+
+    ctx.reply(`${lines.join('\n\n')}\n\nOverall: ${totals.wins || 0}W / ${totals.losses || 0}L of ${totals.total} trades`);
   });
 
   bot.command('clearhistory', (ctx) => {

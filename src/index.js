@@ -13,7 +13,7 @@ const { startPancakeGraduationListener } = require('./listeners/pancakeGraduatio
 const { gatherTokenData, evaluateForUser } = require('./filters/safetyChecks');
 const { getTraderForUser } = require('./execution/traderFactory');
 const positionManager = require('./risk/positionManager');
-const { shortAddr } = require('./utils/formatting');
+const { shortAddr, formatMc } = require('./utils/formatting');
 const { createBot, notifyUser } = require('./telegram/bot');
 
 // Defense in depth: log and keep running rather than crash on something
@@ -117,6 +117,7 @@ async function main() {
     try {
       const position = await positionManager.openPosition(chatId, trader, candidate.address, tradeSizeBnb, {
         tokenSymbol: candidate.symbol || null,
+        source: candidate.source === 'four_meme' ? 'fourmeme' : 'pancake',
         entryAmountUsd: tradeSizeUsd,
         entryPriceUsd: tokenData.tokenPriceUsd || null,
         openedMarketCapUsd: tokenData.marketCapUsd || null,
@@ -124,7 +125,7 @@ async function main() {
       userBotState.recordSuccess(chatId);
 
       const priceStr = tokenData.tokenPriceUsd ? ` @ $${tokenData.tokenPriceUsd.toPrecision(4)}` : '';
-      const mcStr = tokenData.marketCapUsd ? ` (MC: $${Math.round(tokenData.marketCapUsd).toLocaleString()})` : '';
+      const mcStr = tokenData.marketCapUsd ? ` (MC: ${formatMc(tokenData.marketCapUsd)})` : '';
       notifyUser(
         bot,
         chatId,

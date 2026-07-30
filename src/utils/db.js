@@ -81,6 +81,7 @@ const extraColumns = [
   'pnl_usd REAL',
   'token_symbol TEXT',
   'close_reason TEXT',
+  'source TEXT',
 ];
 for (const col of extraColumns) {
   try {
