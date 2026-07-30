@@ -12,6 +12,7 @@ const { getTraderForUser } = require('../execution/traderFactory');
 const positionManager = require('../risk/positionManager');
 const { shortAddr, pnlEmoji, closeReasonLabel, formatUsd, formatMc } = require('../utils/formatting');
 const { getLiquidityAndMarketCapUsd } = require('../filters/safetyChecks');
+const fourMemeTrader = require('../utils/fourMemeTrader');
 
 const SET_COMMANDS = {
   setsize: { key: 'tradeSizeUsd', label: '$ per trade' },
@@ -315,31 +316,47 @@ function createBot({ provider }) {
       return;
     }
 
-    const lines = await Promise.all(
-      rows.map(async (p) => {
-        let currentMc = null;
-        try {
+    // Fetched one at a time on purpose — firing all of these in parallel
+    // (Promise.all) sends a burst of dozens of RPC calls at once against a
+    // free public endpoint, which gets rate-limited and makes every result
+    // come back as a failure. Sequential is slower but actually works.
+    const lines = [];
+    for (const p of rows) {
+      let currentMc = null;
+      try {
+        if (p.source === 'fourmeme') {
+          const info = await fourMemeTrader.getFourMemeTokenInfo(p.token_address, provider);
+          if (!info.liquidityAdded) {
+            // Still bonding-curve — market cap isn't reliably computable
+            // this way (see safetyChecks.js), so leave it as n/a rather
+            // than showing a misleading $0.
+            currentMc = null;
+          }
+          // If it graduated since we bought, fall through to n/a too —
+          // the PancakeSwap graduation listener would pick it up as its
+          // own separate position rather than updating this one.
+        } else {
           const data = await getLiquidityAndMarketCapUsd(p.token_address, provider);
           currentMc = data.marketCapUsd;
-        } catch {
-          // Leave as null — shown as n/a below.
         }
+      } catch {
+        // Leave as null — shown as n/a below.
+      }
 
-        let pnlPct = null;
-        let pnlUsd = null;
-        if (p.opened_market_cap_usd && currentMc) {
-          pnlPct = ((currentMc - p.opened_market_cap_usd) / p.opened_market_cap_usd) * 100;
-          if (p.entry_amount_usd) pnlUsd = p.entry_amount_usd * (pnlPct / 100);
-        }
+      let pnlPct = null;
+      let pnlUsd = null;
+      if (p.opened_market_cap_usd && currentMc) {
+        pnlPct = ((currentMc - p.opened_market_cap_usd) / p.opened_market_cap_usd) * 100;
+        if (p.entry_amount_usd) pnlUsd = p.entry_amount_usd * (pnlPct / 100);
+      }
 
-        const emoji = pnlPct !== null ? pnlEmoji(pnlPct) : '⚪';
-        const label = `${shortAddr(p.token_address)} (${p.source || 'token'})`;
-        const pnlLine = pnlPct !== null ? `PnL: ${formatUsd(pnlUsd)} (${pnlPct.toFixed(1)}%)` : 'PnL: n/a';
-        const mcLine = `Opened MC: ${formatMc(p.opened_market_cap_usd)} | Current MC: ${formatMc(currentMc)}`;
+      const emoji = pnlPct !== null ? pnlEmoji(pnlPct) : '⚪';
+      const label = `${shortAddr(p.token_address)} (${p.source || 'token'})`;
+      const pnlLine = pnlPct !== null ? `PnL: ${formatUsd(pnlUsd)} (${pnlPct.toFixed(1)}%)` : 'PnL: n/a';
+      const mcLine = `Opened MC: ${formatMc(p.opened_market_cap_usd)} | Current MC: ${currentMc !== null ? formatMc(currentMc) : 'n/a'}`;
 
-        return `${emoji} ${label} - ${p.mode} - size ${formatUsd(p.entry_amount_usd)}\n${pnlLine} | ${mcLine}`;
-      })
-    );
+      lines.push(`${emoji} ${label} - ${p.mode} - size ${formatUsd(p.entry_amount_usd)}\n${pnlLine} | ${mcLine}`);
+    }
 
     const maxPositions = userSettings.get(ctx.from.id, 'maxPositions');
     ctx.reply(`${lines.join('\n\n')}\n\n${rows.length}/${maxPositions} positions open`);
