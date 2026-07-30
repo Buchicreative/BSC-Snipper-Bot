@@ -1,6 +1,7 @@
 const { ethers } = require('ethers');
 const config = require('../config');
 const logger = require('../utils/logger');
+const fourMemeTrader = require('../utils/fourMemeTrader');
 
 const ROUTER_ABI = [
   'function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)',
@@ -51,7 +52,20 @@ class Trader {
     return feeData.gasPrice && feeData.gasPrice < maxGasPrice ? feeData.gasPrice : maxGasPrice;
   }
 
-  async buy(tokenAddress, amountBnb, { slippageBps = 300 } = {}) {
+  async buy(tokenAddress, amountBnb, { slippageBps = 300, venue = 'pancake' } = {}) {
+    if (this.mode === 'paper') {
+      logger.info(`[PAPER] Simulated buy (${venue})`, { tokenAddress, amountBnb });
+      return { simulated: true, tokenAddress, amountBnb, txHash: `paper-${Date.now()}` };
+    }
+
+    if (!this.wallet) {
+      throw new Error('Cannot execute live buy: no wallet registered for this user');
+    }
+
+    if (venue === 'fourmeme') {
+      return fourMemeTrader.buyViaFourMeme(this.wallet, tokenAddress, amountBnb, slippageBps);
+    }
+
     const path = [config.contracts.wbnb, tokenAddress];
     const amountIn = ethers.parseEther(amountBnb.toString());
 
@@ -66,15 +80,6 @@ class Trader {
         tokenAddress,
         error: err.message,
       });
-    }
-
-    if (this.mode === 'paper') {
-      logger.info('[PAPER] Simulated buy', { tokenAddress, amountBnb });
-      return { simulated: true, tokenAddress, amountBnb, txHash: `paper-${Date.now()}` };
-    }
-
-    if (!this.wallet) {
-      throw new Error('Cannot execute live buy: no wallet registered for this user');
     }
 
     const deadline = Math.floor(Date.now() / 1000) + 60;
@@ -95,11 +100,9 @@ class Trader {
     return { simulated: false, tokenAddress, amountBnb, txHash: tx.hash };
   }
 
-  async sell(tokenAddress, tokenAmount, { slippageBps = 300 } = {}) {
-    const path = [tokenAddress, config.contracts.wbnb];
-
+  async sell(tokenAddress, tokenAmount, { slippageBps = 300, venue = 'pancake' } = {}) {
     if (this.mode === 'paper') {
-      logger.info('[PAPER] Simulated sell', { tokenAddress, tokenAmount: tokenAmount.toString() });
+      logger.info(`[PAPER] Simulated sell (${venue})`, { tokenAddress, tokenAmount: tokenAmount.toString() });
       return { simulated: true, tokenAddress, txHash: `paper-${Date.now()}` };
     }
 
@@ -107,6 +110,11 @@ class Trader {
       throw new Error('Cannot execute live sell: no wallet registered for this user');
     }
 
+    if (venue === 'fourmeme') {
+      return fourMemeTrader.sellViaFourMeme(this.wallet, tokenAddress, tokenAmount);
+    }
+
+    const path = [tokenAddress, config.contracts.wbnb];
     const tokenContractRead = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
     const tokenContractWrite = new ethers.Contract(tokenAddress, ERC20_ABI, this.wallet);
 

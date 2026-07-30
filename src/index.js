@@ -161,7 +161,8 @@ async function main() {
       `INSERT OR IGNORE INTO events (type, payload, created_at) VALUES (?, ?, ?)`
     ).run('token_discovered', JSON.stringify(candidate), Date.now());
 
-    const tokenData = await gatherTokenData(candidate.address, httpProvider);
+    const normalizedSource = candidate.source === 'four_meme' ? 'fourmeme' : 'pancake';
+    const tokenData = await gatherTokenData(candidate.address, httpProvider, normalizedSource);
 
     db.prepare(
       `INSERT OR REPLACE INTO tokens (address, source, name, symbol, discovered_at, safety_report)

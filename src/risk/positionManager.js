@@ -31,8 +31,10 @@ function isAtMaxPositions(chatId) {
  * candidate (no extra RPC calls needed at open time).
  */
 async function openPosition(chatId, trader, tokenAddress, amountBnb, opts = {}) {
+  const venue = opts.source === 'fourmeme' ? 'fourmeme' : 'pancake';
   const result = await trader.buy(tokenAddress, amountBnb, {
     slippageBps: userSettings.get(chatId, 'slippageBps'),
+    venue,
   });
 
   const info = db
@@ -87,8 +89,10 @@ async function closePosition(chatId, trader, tokenAddress, tokenAmount, reason =
     amountToSell = trader.mode === 'live' ? await trader.getTokenBalance(tokenAddress) : 1n;
   }
 
+  const venue = position.source === 'fourmeme' ? 'fourmeme' : 'pancake';
   const result = await trader.sell(tokenAddress, amountToSell, {
     slippageBps: userSettings.get(chatId, 'slippageBps'),
+    venue,
   });
 
   let closedMarketCapUsd = null;

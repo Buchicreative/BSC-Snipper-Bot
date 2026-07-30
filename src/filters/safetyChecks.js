@@ -5,6 +5,7 @@ const honeypotChecker = require('../utils/honeypotChecker');
 const liquidityLock = require('../utils/liquidityLock');
 const holderConcentration = require('../utils/holderConcentration');
 const contractVerification = require('../utils/contractVerification');
+const fourMemeTrader = require('../utils/fourMemeTrader');
 const logger = require('../utils/logger');
 
 const ERC20_ABI = [
@@ -87,8 +88,8 @@ async function getLiquidityAndMarketCapUsd(tokenAddress, provider) {
  * computed once per candidate and shared across every user's evaluation via
  * evaluateForUser() below — instead of repeating all these calls per user.
  */
-async function gatherTokenData(tokenAddress, provider) {
-  const data = { tokenAddress };
+async function gatherTokenData(tokenAddress, provider, source) {
+  const data = { tokenAddress, source };
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
 
   // Ownership
@@ -98,16 +99,38 @@ async function gatherTokenData(tokenAddress, provider) {
     data.owner = 'unknown';
   }
 
-  // Liquidity + market cap (also resolves the pair address, reused below)
-  try {
-    const { liquidityUsd, marketCapUsd, tokenPriceUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
-    data.liquidityUsd = liquidityUsd;
-    data.marketCapUsd = marketCapUsd;
-    data.tokenPriceUsd = tokenPriceUsd;
-    data.pairAddress = pairAddress;
-  } catch (err) {
-    logger.warn('Liquidity/market cap read failed', { tokenAddress, error: err.message });
-    data.liquidityReadFailed = true;
+  // Liquidity + market cap. For PancakeSwap graduation candidates, this
+  // reads real pair reserves. For four.meme candidates still on the
+  // bonding curve, there IS no PancakeSwap pair yet — that's expected, not
+  // a failure — so we use the BNB raised into the bonding curve so far
+  // (from TokenManagerHelper3) as the liquidity proxy instead. Market cap
+  // isn't reliably computable pre-graduation without the exact bonding
+  // curve formula, so it's marked unavailable rather than guessed at.
+  if (source === 'fourmeme') {
+    try {
+      const info = await fourMemeTrader.getFourMemeTokenInfo(tokenAddress, provider);
+      const bnbUsdPrice = await priceFeed.getBnbUsdPrice();
+      const fundsRaisedBnb = parseFloat(ethers.formatEther(info.fundsRaisedWei));
+      data.liquidityUsd = fundsRaisedBnb * bnbUsdPrice; // used as the liquidity proxy below
+      data.fourMemeLiquidityAdded = info.liquidityAdded;
+      data.marketCapUsd = 0;
+      data.marketCapUnavailable = true; // evaluateForUser skips min/max market cap checks
+      data.pairAddress = null;
+    } catch (err) {
+      logger.warn('four.meme bonding-curve data read failed', { tokenAddress, error: err.message });
+      data.liquidityReadFailed = true;
+    }
+  } else {
+    try {
+      const { liquidityUsd, marketCapUsd, tokenPriceUsd, pairAddress } = await getLiquidityAndMarketCapUsd(tokenAddress, provider);
+      data.liquidityUsd = liquidityUsd;
+      data.marketCapUsd = marketCapUsd;
+      data.tokenPriceUsd = tokenPriceUsd;
+      data.pairAddress = pairAddress;
+    } catch (err) {
+      logger.warn('Liquidity/market cap read failed', { tokenAddress, error: err.message });
+      data.liquidityReadFailed = true;
+    }
   }
 
   // Holder concentration (needs ETHERSCAN_API_KEY; soft-fails otherwise)
@@ -195,11 +218,13 @@ function evaluateForUser(data, userSettings) {
     if ((data.liquidityUsd ?? 0) < userSettings.minLiquidityUsd) {
       reasons.push('liquidity_below_minimum');
     }
-    if (userSettings.maxMarketCapUsd > 0 && (data.marketCapUsd ?? 0) > userSettings.maxMarketCapUsd) {
-      reasons.push('market_cap_above_maximum');
-    }
-    if (userSettings.minMarketCapUsd > 0 && (data.marketCapUsd ?? 0) < userSettings.minMarketCapUsd) {
-      reasons.push('market_cap_below_minimum');
+    if (!data.marketCapUnavailable) {
+      if (userSettings.maxMarketCapUsd > 0 && (data.marketCapUsd ?? 0) > userSettings.maxMarketCapUsd) {
+        reasons.push('market_cap_above_maximum');
+      }
+      if (userSettings.minMarketCapUsd > 0 && (data.marketCapUsd ?? 0) < userSettings.minMarketCapUsd) {
+        reasons.push('market_cap_below_minimum');
+      }
     }
   }
 
