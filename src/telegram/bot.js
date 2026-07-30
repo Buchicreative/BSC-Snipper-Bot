@@ -44,10 +44,11 @@ function formatSettings(s) {
 }
 
 const SECURITY_NOTICE =
-  'This bot holds your private key encrypted in its database so it can trade automatically for you. ' +
-  'That means whoever controls this deployment (and its encryption key) can technically access your funds — ' +
-  'the same trust model as any custodial trading bot. Keep only what you\'re willing to risk in this wallet, ' +
-  'and move profits out to a wallet you control directly.';
+  '📌 A quick note on how this works: to trade automatically for you, this bot stores your wallet\'s ' +
+  'private key encrypted in its database — similar to how any exchange or auto-trading bot holds funds ' +
+  'on your behalf. Nobody is watching or using your key; it just sits there encrypted so the bot can sign ' +
+  'trades for you. As with any bot like this, it\'s good practice to keep only what you\'re actively trading ' +
+  'with here, and move profits out whenever you like — /exportkey gets your key back out anytime, no questions asked.';
 
 function createBot({ provider }) {
   const bot = new Telegraf(config.telegram.botToken);
