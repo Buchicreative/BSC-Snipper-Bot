@@ -60,6 +60,14 @@ async function main() {
 
     const evaluation = evaluateForUser(tokenData, userSettings.getAll(chatId));
     if (!evaluation.passed) {
+      logger.info('Candidate rejected by safety evaluation', {
+        chatId,
+        address: candidate.address,
+        source: candidate.source,
+        reasons: evaluation.reasons,
+        liquidityUsd: tokenData.liquidityUsd,
+        marketCapUsd: tokenData.marketCapUsd,
+      });
       return;
     }
 
