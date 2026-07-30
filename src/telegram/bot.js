@@ -99,7 +99,8 @@ function createBot({ provider }) {
         `/closeall - close all your positions but keep trading (no pause)\n` +
         `/killswitch confirm - stop the ENTIRE deployment for all users\n` +
         `/buy <token> <amountBnb> - manual buy\n` +
-        `/sell <token> <amount> - manual sell\n` +
+        `/sell <token> <amount> - manual sell (needs exact token amount)\n` +
+        `/close <token address or short address> - close one position, amount handled automatically\n` +
         `/settings - view all your current thresholds\n` +
         `/status - your mode, pause state, position count, all thresholds`
     );
@@ -480,6 +481,49 @@ function createBot({ provider }) {
     } catch (err) {
       logger.error('Manual sell failed', { chatId: String(ctx.from.id), error: err.message });
       ctx.reply(`Sell failed: ${err.message}`);
+    }
+  });
+
+  bot.command('close', async (ctx) => {
+    const parts = ctx.message.text.split(' ').filter(Boolean);
+    const identifier = parts[1];
+    if (!identifier) {
+      ctx.reply('Usage: /close <token address or short address like 0x12345678>\nSee /positions for the address to use.');
+      return;
+    }
+
+    const open = positionManager.getOpenPositions(ctx.from.id);
+    const needle = identifier.toLowerCase();
+    const matches = open.filter(
+      (p) => p.token_address.toLowerCase() === needle || p.token_address.toLowerCase().startsWith(needle)
+    );
+
+    if (matches.length === 0) {
+      ctx.reply(`No open position matching "${identifier}". Check /positions for the correct address.`);
+      return;
+    }
+    if (matches.length > 1) {
+      ctx.reply(
+        `"${identifier}" matches more than one open position — be more specific:\n` +
+          matches.map((p) => shortAddr(p.token_address)).join('\n')
+      );
+      return;
+    }
+
+    const position = matches[0];
+    const label = `${shortAddr(position.token_address)} (${position.source || 'token'})`;
+
+    try {
+      const trader = getTraderForUser(ctx.from.id, provider);
+      const result = await positionManager.closePosition(ctx.from.id, trader, position.token_address, undefined, 'manual');
+      const pnlLine =
+        result && result.pnlPct !== null && result.pnlPct !== undefined
+          ? `\n${pnlEmoji(result.pnlPct)} PnL ${formatUsd(result.pnlUsd)} (${result.pnlPct.toFixed(1)}%)`
+          : '';
+      ctx.reply(`Closed ${label}.${pnlLine}`);
+    } catch (err) {
+      logger.error('Manual close failed', { chatId: String(ctx.from.id), error: err.message });
+      ctx.reply(`Close failed: ${err.message}`);
     }
   });
 
