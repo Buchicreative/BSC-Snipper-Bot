@@ -24,7 +24,45 @@ const HELPER3_ABI = [
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) external returns (bool)',
   'function allowance(address owner, address spender) external view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function totalSupply() view returns (uint256)',
 ];
+
+/**
+ * Derives the current bonding-curve price and market cap by asking tryBuy
+ * what a small test amount of BNB would get you, rather than trying to
+ * interpret getTokenInfo's `lastPrice` field directly — its exact decimal
+ * scaling isn't documented anywhere confirmable, and guessing wrong would
+ * show a confidently-wrong number (off by a power of 10) rather than an
+ * honest "unavailable." tryBuy is the same function already used for
+ * slippage protection on real buys, so this reuses a call path that's
+ * already proven to decode correctly.
+ */
+async function getFourMemePriceAndMarketCapUsd(tokenAddress, provider, bnbUsdPrice) {
+  const helper = new ethers.Contract(HELPER3_ADDRESS, HELPER3_ABI, provider);
+  const token = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+
+  const testFundsBnb = 0.001; // small enough to have negligible price impact
+  const testFundsWei = ethers.parseEther(testFundsBnb.toString());
+
+  const [quote, decimals, totalSupplyRaw] = await Promise.all([
+    helper.tryBuy(tokenAddress, 0n, testFundsWei),
+    token.decimals(),
+    token.totalSupply(),
+  ]);
+
+  const tokensReceived = parseFloat(ethers.formatUnits(quote.estimatedAmount, decimals));
+  if (tokensReceived <= 0) {
+    throw new Error('tryBuy quote returned zero tokens — cannot derive price');
+  }
+
+  const priceBnbPerToken = testFundsBnb / tokensReceived;
+  const priceUsdPerToken = priceBnbPerToken * bnbUsdPrice;
+  const totalSupplyFormatted = parseFloat(ethers.formatUnits(totalSupplyRaw, decimals));
+  const marketCapUsd = priceUsdPerToken * totalSupplyFormatted;
+
+  return { priceUsdPerToken, marketCapUsd };
+}
 
 /**
  * Reads bonding-curve status for a four.meme token: version (must be 2 —
@@ -112,6 +150,7 @@ module.exports = {
   TOKEN_MANAGER2_ADDRESS,
   HELPER3_ADDRESS,
   getFourMemeTokenInfo,
+  getFourMemePriceAndMarketCapUsd,
   buyViaFourMeme,
   sellViaFourMeme,
 };

@@ -113,9 +113,21 @@ async function gatherTokenData(tokenAddress, provider, source) {
       const fundsRaisedBnb = parseFloat(ethers.formatEther(info.fundsRaisedWei));
       data.liquidityUsd = fundsRaisedBnb * bnbUsdPrice; // used as the liquidity proxy below
       data.fourMemeLiquidityAdded = info.liquidityAdded;
-      data.marketCapUsd = 0;
-      data.marketCapUnavailable = true; // evaluateForUser skips min/max market cap checks
       data.pairAddress = null;
+
+      try {
+        const { priceUsdPerToken, marketCapUsd } = await fourMemeTrader.getFourMemePriceAndMarketCapUsd(
+          tokenAddress,
+          provider,
+          bnbUsdPrice
+        );
+        data.tokenPriceUsd = priceUsdPerToken;
+        data.marketCapUsd = marketCapUsd;
+      } catch (mcErr) {
+        logger.warn('four.meme market cap derivation failed', { tokenAddress, error: mcErr.message });
+        data.marketCapUsd = 0;
+        data.marketCapUnavailable = true; // evaluateForUser skips min/max market cap checks
+      }
     } catch (err) {
       logger.warn('four.meme bonding-curve data read failed', { tokenAddress, error: err.message });
       data.liquidityReadFailed = true;

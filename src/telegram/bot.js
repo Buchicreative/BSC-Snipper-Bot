@@ -326,16 +326,20 @@ function createBot({ provider }) {
       try {
         if (p.source === 'fourmeme') {
           const info = await fourMemeTrader.getFourMemeTokenInfo(p.token_address, provider);
-          if (!info.liquidityAdded) {
-            // Still bonding-curve — market cap isn't reliably computable
-            // this way (see safetyChecks.js), so leave it as n/a rather
-            // than showing a misleading $0.
+          if (info.liquidityAdded) {
+            // Graduated since we bought — market cap is trackable via
+            // PancakeSwap again, but the graduation listener that would
+            // auto-detect that is currently disabled (four.meme-only mode).
             currentMc = null;
+          } else {
+            const bnbUsdPrice = await priceFeed.getBnbUsdPrice();
+            const { marketCapUsd } = await fourMemeTrader.getFourMemePriceAndMarketCapUsd(
+              p.token_address,
+              provider,
+              bnbUsdPrice
+            );
+            currentMc = marketCapUsd;
           }
-          // If it graduated since we bought, market cap becomes trackable
-          // via PancakeSwap again — but the graduation listener that would
-          // auto-detect that is currently disabled (four.meme-only mode),
-          // so this just shows n/a rather than picking it up automatically.
         } else {
           const data = await getLiquidityAndMarketCapUsd(p.token_address, provider);
           currentMc = data.marketCapUsd;
