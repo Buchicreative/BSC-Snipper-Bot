@@ -67,7 +67,7 @@ function createBot({ provider }) {
   bot.start((ctx) => {
     const hasWallet = userWallets.hasWallet(ctx.from.id);
     ctx.reply(
-      `BSC Sniper Bot — four.meme + PancakeSwap graduation\n` +
+      `BSC Sniper Bot — four.meme launches only\n` +
         `Wallet: ${hasWallet ? userWallets.getWalletAddress(ctx.from.id) : 'none — use /generatewallet or /importwallet'}\n` +
         `Mode: ${userBotState.getMode(ctx.from.id).toUpperCase()}\n\n` +
         `Wallet commands:\n` +
@@ -332,9 +332,10 @@ function createBot({ provider }) {
             // than showing a misleading $0.
             currentMc = null;
           }
-          // If it graduated since we bought, fall through to n/a too —
-          // the PancakeSwap graduation listener would pick it up as its
-          // own separate position rather than updating this one.
+          // If it graduated since we bought, market cap becomes trackable
+          // via PancakeSwap again — but the graduation listener that would
+          // auto-detect that is currently disabled (four.meme-only mode),
+          // so this just shows n/a rather than picking it up automatically.
         } else {
           const data = await getLiquidityAndMarketCapUsd(p.token_address, provider);
           currentMc = data.marketCapUsd;

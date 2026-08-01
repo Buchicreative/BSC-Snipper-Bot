@@ -9,7 +9,6 @@ const botState = require('./utils/botState');
 const priceFeed = require('./utils/priceFeed');
 
 const { startFourMemeListener } = require('./listeners/fourMemeListener');
-const { startPancakeGraduationListener } = require('./listeners/pancakeGraduationListener');
 const { gatherTokenData, evaluateForUser } = require('./filters/safetyChecks');
 const { getTraderForUser } = require('./execution/traderFactory');
 const positionManager = require('./risk/positionManager');
@@ -183,12 +182,11 @@ async function main() {
   }
 
   const fourMeme = startFourMemeListener({ onTokenCreated: handleCandidateToken });
-  const graduation = startPancakeGraduationListener({ onPairCreated: handleCandidateToken });
 
   await launchBotWithRetry(bot);
 
-  process.once('SIGINT', () => shutdown({ bot, fourMeme, graduation }));
-  process.once('SIGTERM', () => shutdown({ bot, fourMeme, graduation }));
+  process.once('SIGINT', () => shutdown({ bot, fourMeme }));
+  process.once('SIGTERM', () => shutdown({ bot, fourMeme }));
 }
 
 /**
@@ -219,11 +217,10 @@ async function launchBotWithRetry(bot, attempt = 1) {
   }
 }
 
-function shutdown({ bot, fourMeme, graduation }) {
+function shutdown({ bot, fourMeme }) {
   logger.info('Shutting down...');
   bot.stop('SIGTERM');
   fourMeme.stop();
-  graduation.stop();
   process.exit(0);
 }
 

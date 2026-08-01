@@ -1,12 +1,13 @@
-# BSC Sniper Bot (four.meme + PancakeSwap graduation)
+# BSC Sniper Bot (four.meme bonding curve — pump.fun-style)
 
-Multi-user Telegram sniping bot for BSC. Any Telegram user on the allowlist
+Multi-user Telegram sniping bot for BSC, matching pump.fun's model: it snipes
+**four.meme launches only**, bought and sold directly through the bonding
+curve — same as how the Solana pump.fun sniper only trades pump.fun's own
+curve, not post-graduation Raydium pairs. Any Telegram user on the allowlist
 can register their own wallet (generate a new one, or import via private key
 or seed phrase) and trade independently — their own settings, their own
 wallet, their own positions, isolated from every other user on the same
-deployment. Separate project from the Solana/BSC memebot — same architecture
-and feature set, rebuilt for this chain's launchpad ecosystem, with command
-parity to the Solana pump.fun sniper.
+deployment.
 
 ## Multi-user model
 
@@ -38,11 +39,16 @@ trapped here permanently.
 
 ## What it watches
 
-1. **four.meme launches** — new token creation events on the four.meme factory
-   contract (BSC's dominant pump.fun-style bonding-curve launchpad).
-2. **PancakeSwap graduation** — new pair creation on PancakeSwap V2 factory,
-   which is what happens when a four.meme token's bonding curve completes and
-   it gets real liquidity.
+**four.meme launches only** — new token creation events on the four.meme
+factory contract (BSC's dominant pump.fun-style bonding-curve launchpad).
+Buys and sells execute directly against the bonding curve
+(`TokenManager2.buyTokenAMAP` / `sellToken`) — not PancakeSwap.
+
+A PancakeSwap-graduation listener exists in the codebase
+(`src/listeners/pancakeGraduationListener.js`) but is **not started** —
+disabled on purpose to keep this matching pump.fun's single-venue model. It
+can be re-enabled in `src/index.js` if you ever want post-graduation sniping
+back.
 
 All position sizing and thresholds are **USD-denominated** (converted to BNB
 at execution time via a live BNB/USD price feed), matching the Solana bot's
@@ -91,7 +97,7 @@ architecturally blocking `/mode live` — but two things are worth doing before
 you trust it with real money:
 
 - **Run it in paper mode first and watch the Telegram feed** for a while.
-  Confirm it's catching real four.meme launches and PancakeSwap graduations,
+  Confirm it's catching real four.meme launches,
   and that the safety checks are behaving the way you expect.
 - **Double-check the honeypot.is and Etherscan API responses hold up** under
   real traffic — both are third-party services this bot depends on, and
