@@ -162,21 +162,33 @@ async function gatherTokenData(tokenAddress, provider, source) {
     data.holderConcentrationCheckSkipped = err.message;
   }
 
-  // Honeypot + tax simulation (honeypot.is)
-  try {
-    const hp = await honeypotChecker.checkHoneypot(tokenAddress);
-    data.honeypotChecked = hp.checked;
-    if (hp.checked) {
-      data.isHoneypot = hp.isHoneypot;
-      data.honeypotReason = hp.honeypotReason;
-      data.buyTaxPct = hp.buyTaxPct;
-      data.sellTaxPct = hp.sellTaxPct;
-      data.risk = hp.risk;
-      data.riskLevel = hp.riskLevel;
-    }
-  } catch (err) {
-    logger.warn('Honeypot check errored', { tokenAddress, error: err.message });
+  // Honeypot + tax simulation (honeypot.is). Skipped entirely for four.meme
+  // candidates — honeypot.is simulates a buy+sell through a DEX pair, and a
+  // pre-graduation four.meme token has no DEX pair to simulate against. It's
+  // not "unavailable," it's structurally not applicable yet — calling it
+  // anyway just burns an API call and logs a guaranteed, meaningless 404
+  // every single time. Once a token graduates to PancakeSwap, this check
+  // becomes meaningful again (would apply if the graduation listener were
+  // re-enabled).
+  if (source === 'fourmeme') {
     data.honeypotChecked = false;
+    data.honeypotSkippedReason = 'not_applicable_pre_graduation';
+  } else {
+    try {
+      const hp = await honeypotChecker.checkHoneypot(tokenAddress);
+      data.honeypotChecked = hp.checked;
+      if (hp.checked) {
+        data.isHoneypot = hp.isHoneypot;
+        data.honeypotReason = hp.honeypotReason;
+        data.buyTaxPct = hp.buyTaxPct;
+        data.sellTaxPct = hp.sellTaxPct;
+        data.risk = hp.risk;
+        data.riskLevel = hp.riskLevel;
+      }
+    } catch (err) {
+      logger.warn('Honeypot check errored', { tokenAddress, error: err.message });
+      data.honeypotChecked = false;
+    }
   }
 
   // LP lock % (informational)
