@@ -220,7 +220,23 @@ async function gatherTokenData(tokenAddress, provider, source) {
 function evaluateForUser(data, userSettings) {
   const reasons = [];
 
-  if (data.owner && data.owner !== ethers.ZeroAddress && data.owner !== 'unknown') {
+  // For four.meme tokens, the token contract is deployed BY TokenManager2 as
+  // part of createToken(), and the full supply is minted into its custody to
+  // run the bonding curve — so owner() returning TokenManager2's own address
+  // is the normal, structurally-enforced state for every legitimate
+  // four.meme token, not a rug-pull red flag the way an anonymous EOA owner
+  // would be. Only flag ownership if it's some OTHER non-zero address.
+  const ownerIsExpectedFourMemeCustodian =
+    data.source === 'fourmeme' &&
+    data.owner &&
+    data.owner.toLowerCase() === fourMemeTrader.TOKEN_MANAGER2_ADDRESS.toLowerCase();
+
+  if (
+    data.owner &&
+    data.owner !== ethers.ZeroAddress &&
+    data.owner !== 'unknown' &&
+    !ownerIsExpectedFourMemeCustodian
+  ) {
     reasons.push('ownership_not_renounced');
   }
 
